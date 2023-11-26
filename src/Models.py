@@ -226,7 +226,7 @@ class ModelMatrix(object):
 
     @staticmethod
     def get_weightedvalues(weights, models=None, likes=None, misfits=None,
-                           noiseparams=None, vpvs=None):
+                           noiseparams=None, vpvss=None, anis=None):
         """
         Return weighted matrix of models, misfits and noiseparams, and weighted
         vectors of likelihoods.
@@ -234,7 +234,7 @@ class ModelMatrix(object):
         Basically just repeats values, as given by weights.
         """
         weights = np.array(weights, dtype=int)
-        wlikes, wmisfits, wmodels, wnoise, wvpvs = (None, None, None, None, None)
+        wlikes, wmisfits, wmodels, wnoise, wvpvss, wani = (None, None, None, None, None, None)
 
         if likes is not None:
             wlikes = np.repeat(likes, weights)
@@ -268,7 +268,23 @@ class ModelMatrix(object):
                     wnoise[n] = noisepars
                     n += 1
 
-        if vpvs is not None:
-            wvpvs = np.repeat(vpvs, weights)
+        if vpvss is not None:
+            # wvpvs = np.repeat(vpvs, weights)
+            wvpvss = np.ones((np.sum(weights), vpvss[0].size)) * np.nan
 
-        return wmodels, wlikes, wmisfits, wnoise, wvpvs
+            n = 0
+            for i, vpvs in enumerate(vpvss):
+                for rep in range(weights[i]):
+                    wvpvss[n] = vpvs
+                    n += 1
+        
+        if anis is not None:
+            wanis = np.ones((np.sum(weights), 3, anis[0][0].size)) * np.nan
+
+            n = 0
+            for i, ani in enumerate(anis):
+                for rep in range(weights[i]):
+                    wanis[n] = ani
+                    n += 1
+
+        return wmodels, wlikes, wmisfits, wnoise, wvpvss, wani

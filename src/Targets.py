@@ -20,6 +20,10 @@ class ObservedData(object):
     x = continuous and monotone increasing vector
     y = y(x)
 
+    For iterative deconvolution, y consists of 73 traces,
+    representing 0 to 360 degree with 5 degree interval.
+    Each trace is constructed by radial and transverse component.
+
     """
     def __init__(self, x, y, yerr=None):
         self.x = x
@@ -296,7 +300,13 @@ class SReceiverFunction(SingleTarget):
         ref = 'srf'
         SingleTarget.__init__(self, x, y, ref, yerr=yerr)
 
+class IterReceiverFunction(SingleTarget):
+    noiseref = 'rf'
 
+    def __init__(self, x, y, yerr=None):
+        ref = 'iterrf'
+        SingleTarget.__init__(self, x, y, ref, yerr=yerr)
+        
 class JointTarget(object):
     """A JointTarget object contains a list of SingleTargets and is responsible
     for computing the joint likelihood, given all model parameters."""
@@ -316,7 +326,9 @@ class JointTarget(object):
         It computes the jointmisfit, and more important the jointlikelihoods.
         The jointlikelihood (here called the proposallikelihood) is the sum
         of the log-likelihoods from each target."""
-        rho = kwargs.pop('rho', vp * 0.32 + 0.77)
+        rho = kwargs.pop('rho', 
+                         1.6612*vp - 0.4721*vp**2 + 0.0671*vp**3 - 0.0043*vp**4\
+                            + 0.000103*vp**5)
 
         logL = 0
         for n, target in enumerate(self.targets):
@@ -335,6 +347,17 @@ class JointTarget(object):
             corr, sigma = noise[2*n:2*n+2]
             c_inv, logc_det = target.get_covariance(
                 sigma=sigma, size=size, yerr=yerr, corr=corr)
+
+            if target.ref == 'iterrf':
+                halfsize = int(size / 2)
+                ydiff = target.moddata.y - target.obsdata.y
+                madist = (ydiff[:, :halfsize].T).dot(c_inv).dot(ydiff[:, :halfsize]) + \
+                            (ydiff[:, -halfsize:].T).dot(c_inv).dot(ydiff[:, -halfsize:])
+                logL_part = -0.5 * (size * np.log(2*np.pi) + logc_det)
+                logL_target = (logL_part - madist / 2.)
+
+                logL += logL_target
+                continue
 
             ydiff = target.moddata.y - target.obsdata.y
             madist = (ydiff.T).dot(c_inv).dot(ydiff)
