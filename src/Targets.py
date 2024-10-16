@@ -20,7 +20,7 @@ class ObservedData(object):
     x = continuous and monotone increasing vector
     y = y(x)
 
-    For iterative deconvolution, y consists of 73 traces,
+    For iterative deconvolution, `y` consists of 73 traces,
     representing 0 to 360 degree with 5 degree interval.
     Each trace is constructed by radial and transverse component.
 
@@ -66,6 +66,11 @@ class ModeledData(object):
             self.plugin = SurfDisp(obsx, ref)
             self.xlabel = 'Period in s'
 
+        elif ref in ['iterrf']:
+            from BayHunter.iterrf import IterRF
+            self.plugin = IterRF(obsx, ref)
+            self.xlabel = 'Time in s'
+
         else:
             message = "Please provide a forward modeling plugin for your " + \
                 "target.\nUse target.update_plugin(MyForwardClass())"
@@ -82,7 +87,9 @@ class ModeledData(object):
     def calc_synth(self, h, vp, vs, **kwargs):
         """ Call forward modeling method of plugin."""
         rho = kwargs.pop('rho')
-
+        # ani = kwargs.get('ani', None)
+        # flag = kwargs.get('flag', None)
+        
         self.x, self.y = self.plugin.run_model(h, vp, vs, rho=rho, **kwargs)
 
 
@@ -329,10 +336,12 @@ class JointTarget(object):
         rho = kwargs.pop('rho', 
                          1.6612*vp - 0.4721*vp**2 + 0.0671*vp**3 - 0.0043*vp**4\
                             + 0.000103*vp**5)
+        ani = kwargs.get('ani', None)
+        flag = kwargs.get('flag', None)
 
         logL = 0
         for n, target in enumerate(self.targets):
-            target.moddata.calc_synth(h=h, vp=vp, vs=vs, rho=rho, **kwargs)
+            target.moddata.calc_synth(h=h, vp=vp, vs=vs, rho=rho, ani=ani, flag=flag)
 
             if not target._moddata_valid():
                 self.proposallikelihood = -1e15

@@ -1,7 +1,7 @@
 # #############################
 #
-# Copyright (C) 2018
-# Jennifer Dreiling   (dreiling@gfz-potsdam.de)
+# Copyright (C) 2024
+# RUAN Yihuan   (ruan.yihuan.86s@st.kyoto-u.ac.jp)
 #
 #
 # #############################
@@ -66,14 +66,14 @@ class IterRF(object):
         rho: Density 
         """
         
-        rho = params.get(rho)
-        mults = params.get(mults, 1)
-        strike = params.get(strike, np.zeros(h.size))
-        dip = params.get(dip, np.zeros(h.size))
-        flag = params.get(flag, np.ones(h.size, dtype='int')) #如何设置各向异性层
-        ani = params.get(ani[0, :], np.zeros(h.size))
-        trend = params.get(ani[1, :], np.zeros(h.size))
-        plunge = params.get(ani[2, :], np.zeros(h.size))
+        rho = params.get('rho')
+        mults = params.get('mults', 1)
+        strike = params.get('strike', np.zeros(h.size))
+        dip = params.get('dip', np.zeros(h.size))
+        flag = params.get('flag', np.ones(h.size, dtype='int'))
+        ani = params.get('ani', np.zeros(h.size))[0, :]
+        trend = params.get('ani', np.zeros(h.size))[1, :]
+        plunge = params.get('ani', np.zeros(h.size))[2, :]
 
         gauss = self.modelparams['gauss']
         odina_flag = self.modelparams['odina_flag']
