@@ -56,6 +56,10 @@ class MCMC_Optimizer(object):
 
         self.nchains = self.initparams.get('nchains')
         self.ntargets = len(targets.targets)
+        self.ani_flag = False
+        ref_list = [target.ref for target in targets.targets]
+        if 'iterrf' in ref_list:
+            self.ani_flag = True
 
         self.iter_phase1 = int(self.initparams['iter_burnin'])
         self.iter_phase2 = int(self.initparams['iter_main'])
@@ -119,10 +123,20 @@ class MCMC_Optimizer(object):
 
         # vpvs
         self.sharedvpvs = sharedctypes.RawArray(
-            'f', self.nchains * self.nmodels)
+            'f', self.nchains * (self.nmodels * self.maxlayers))
         vpvsdata = np.frombuffer(self.sharedvpvs, dtype=dtype)
         vpvsdata.fill(np.nan)
         memory += vpvsdata.nbytes
+
+        # anisotropy
+        if self.ani_flag:
+            self.sharedani = sharedctypes.RawArray(
+                'f', self.nchains * (self.nmodels * self.maxlayers * 3))
+            anidata = np.frombuffer(self.sharedani, dtype=dtype)
+            anidata.fill(np.nan)
+            memory += anidata.nbytes
+        else:
+            self.sharedani=None
 
         memory = np.ceil(memory / 1e6)
         logger.info('... they occupy ~%d MB memory.' % memory)
@@ -133,7 +147,7 @@ class MCMC_Optimizer(object):
             initparams=self.initparams, sharedmodels=self.sharedmodels,
             sharedmisfits=self.sharedmisfits, sharedlikes=self.sharedlikes,
             sharednoise=self.sharednoise, sharedvpvs=self.sharedvpvs,
-            random_seed=self.rstate.randint(1000))
+            sharedani=self.sharedani, random_seed=self.rstate.randint(1000))
 
         return chain
 
@@ -154,7 +168,7 @@ class MCMC_Optimizer(object):
         noise = np.frombuffer(self.sharednoise, dtype=dtype) \
             .reshape((self.nchains, self.nmodels, self.ntargets*2))
         vpvs = np.frombuffer(self.sharedvpvs, dtype=dtype) \
-            .reshape((self.nchains, self.nmodels))
+            .reshape((self.nchains, self.nmodels, self.maxlayers))
 
         def get_latest_row(models):
             nan_mask = ~np.isnan(models[:, :, 0])
@@ -178,9 +192,9 @@ class MCMC_Optimizer(object):
             return np.vstack(latest_noise)
 
         def get_latest_vpvs(vpvs):
-            nan_mask = ~np.isnan(vpvs[:, :])
+            nan_mask = ~np.isnan(vpvs[:, :, 0])
             vpvs_mask = np.argmax(np.cumsum(nan_mask, axis=1), axis=1)
-            latest_vpvs = [vpvs[ic, vpvs_mask[ic]]
+            latest_vpvs = [vpvs[ic, vpvs_mask[ic], :]
                            for ic in range(self.nchains)]
             return np.vstack(latest_vpvs)
 

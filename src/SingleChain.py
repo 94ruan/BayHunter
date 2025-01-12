@@ -42,7 +42,7 @@ class SingleChain(object):
         # set targets and inversion specific parameters
         self.targets = targets
         self.ani_flag = False
-        ref_list = [target.ref for target in self.targets]
+        ref_list = [target.ref for target in self.targets.targets]
         if 'iterrf' in ref_list:
             self.ani_flag = True
 
@@ -73,21 +73,25 @@ class SingleChain(object):
 # init model and misfit / likelihood
 
     def _init_model_and_currentvalues(self):
+        self.init_flag = True # for adjusting the anisotropic parameter when model changed
         ivpvs = self.draw_initvpvs()
-        # self.currentvpvs = ivpvs
+        self.currentvpvs = ivpvs
         imodel = self.draw_initmodel()
         # self.currentmodel = imodel
         inoise, corrfix = self.draw_initnoiseparams()
         # self.currentnoise = inoise
-        if self.ani_flag:
-            iani = self.draw_initani(imodel)
-        else:
-            iani = False
+        
         rcond = self.initparams['rcond']
         self.set_target_covariance(corrfix[::2], inoise[::2], rcond)
 
         vp, vs, h = Model.get_vp_vs_h(imodel, ivpvs, self.mantle)
-        self.targets.evaluate(h=h, vp=vp, vs=vs, noise=inoise, ani=iani, flag=self.currentaniflag)
+        if self.ani_flag:
+            iani = self.draw_initani(imodel)
+        else:
+            iani = np.zeros((3, h.size))
+            self.tempaniflag = np.ones(h.size)
+        self.init_flag = False
+        self.targets.evaluate(h=h, vp=vp, vs=vs, noise=inoise, ani=iani, flag=self.tempaniflag)
 
         # self.currentmisfits = self.targets.proposalmisfits
         # self.currentlikelihood = self.targets.proposallikelihood
@@ -95,7 +99,7 @@ class SingleChain(object):
         logger.debug((vs, h))
 
         self.n = 0  # accepted models counter
-        self.accept_as_currentmodel(imodel, inoise, ivpvs, ani=iani)
+        self.accept_as_currentmodel(imodel, inoise, ivpvs, ani=iani, flag=self.tempaniflag)
         self.append_currentmodel()
 
     def draw_fixedcell(self, fix_inter, fix_vel):
@@ -121,7 +125,7 @@ class SingleChain(object):
         layers = self.priors['layers'][0] + 1  # half space
 
         # add fixed-layers (sedi)
-        if (self.priors['fixed'] is not None):
+        if (self.priors['fixed']):
             temp_fix_z, temp_fix_vel = self.draw_fixedcell(self.priors['fixeddep'], self.priors['fixedvel'])
             self.fixzmax = np.max(temp_fix_z)
             vsmin = np.max(temp_fix_vel)
@@ -182,7 +186,7 @@ class SingleChain(object):
         return init_noise, corrfix
 
     def draw_initvpvs(self):
-        if type(self.priors['vpvs']) == np.float:
+        if type(self.priors['vpvs']) == float:
             return self.priors['vpvs']
         
         if (self.priors['fixed'] is not None):
@@ -200,7 +204,7 @@ class SingleChain(object):
         z_ani_flag = np.where((z_vnoi>self.priors['anilim'][0]) & (z_vnoi<self.priors['anilim'][1]), 0, 1)
         if z_ani_flag[-1] == 0: # if including last layer
             z_ani_flag[-1] = 1
-        self.currentaniflag = z_ani_flag 
+        self.tempaniflag = z_ani_flag 
         z_ani_ind = np.where(z_ani_flag != 1)[0] # the arguments/indexes within anisotropic zone of CURRENT model
         # layers = self.priors['layers'][0] + 1 # Add half-space
         
@@ -294,9 +298,12 @@ exponential law. Explicitly state a noise reference for your user target \
             reshape((nchains, nsize))
         vpvs = np.frombuffer(sharedvpvs, dtype=dtype).\
             reshape((nchains, vpvssize))
-        ani = np.frombuffer(sharedani, dtype=dtype). \
-            reshape((nchains, anisize))
-
+        
+        if self.ani_flag:
+            ani = np.frombuffer(sharedani, dtype=dtype). \
+                reshape((nchains, anisize))
+            self.chainani = ani[chainidx].reshape(
+                self.nmodels, 3, self.maxlayers)
 
         self.chainmodels = models[chainidx].reshape(
             self.nmodels, self.maxlayers*2)
@@ -307,8 +314,7 @@ exponential law. Explicitly state a noise reference for your user target \
             self.nmodels, ntargets*2)
         self.chainvpvs = vpvs[chainidx].reshape(
             self.nmodels, self.maxlayers)
-        self.chainani = ani[chainidx].reshape(
-            self.nmodels, 3, self.maxlayers)
+        
         self.chainiter = np.ones(self.chainlikes.size) * np.nan
 
 
@@ -333,7 +339,11 @@ exponential law. Explicitly state a noise reference for your user target \
         vs_before = vs_vnoi[ind]
         vs_birth = vs_before + self.rstate.normal(0, self.propdist[2])
 
-        self._ani_vpvs_layerbirth(ind) # Change anisotropic parameters
+        if (z_birth>self.priors['anilim'][0]) & (z_birth<self.priors['anilim'][1]):
+            z_ani_flag = True
+        else:
+            z_ani_flag = False
+        self._ani_vpvs_layerbirth(ind, z_ani_flag) # Change anisotropic parameters
 
         z_new = np.concatenate((z_vnoi, [z_birth]))
         vs_new = np.concatenate((vs_vnoi, [vs_birth]))
@@ -391,9 +401,9 @@ exponential law. Explicitly state a noise reference for your user target \
         elif modify == 'death':
             propmodel = self._model_layerdeath(model)
 
-        return self._sort_modelproposal(propmodel)
+        return self._sort_modelproposal(propmodel, modify)
 
-    def _sort_modelproposal(self, model):
+    def _sort_modelproposal(self, model, modify):
         """
         Return the sorted proposal model.
 
@@ -406,10 +416,10 @@ exponential law. Explicitly state a noise reference for your user target \
         else:
             ind = np.argsort(z_vnoi)
             model_sort = np.concatenate((vs[ind], z_vnoi[ind]))
-            self._sort_ani_vpvs(ind)
+            self._sort_ani_vpvs(ind, modify)
         return model_sort
 
-    def _validmodel(self, model):
+    def _validmodel(self, model, **kwparam):
         """
         Check model before the forward modeling.
 
@@ -419,7 +429,12 @@ exponential law. Explicitly state a noise reference for your user target \
            no smaller than (1-perc) * velocity of layer above.
         - ... and some other constraints. E.g. vs boundaries (prior) given.
         """
-        vp, vs, h = Model.get_vp_vs_h(model, self.currentvpvs, self.mantle)
+        modify = kwparam.pop('modify', False)
+        if modify in ['birth', 'death']:
+            vpvs = self.tempvpvs
+        else:
+            vpvs = self.currentvpvs
+        vp, vs, h = Model.get_vp_vs_h(model, vpvs, self.mantle)
 
         # check whether nlayers lies within the prior
         layermin = self.priors['layers'][0]
@@ -471,15 +486,18 @@ exponential law. Explicitly state a noise reference for your user target \
                              % self.chainidx)
                 return False
 
-        if self.ani_flag:
+        if self.ani_flag and (not self.init_flag): # also for later proposal
+            if modify in ['birth', 'death']:
+                ani = self.tempani
+            else:
+                ani = self.currentani
             n, vs, z_vnoi = Model.split_modelparams(model)
             z_ani_flag = np.where((z_vnoi>self.priors['anilim'][0]) & (z_vnoi<self.priors['anilim'][1]), 0, 1)
             if z_ani_flag[-1] == 0: # if including last layer
                 z_ani_flag[-1] = 1
-            self.currentaniflag = z_ani_flag 
+            self.tempaniflag = z_ani_flag 
             z_ani_ind = np.where(z_ani_flag != 1)[0]
-
-            self.currentani[:, z_ani_ind] = 0.0
+            ani[:, z_ani_ind] = 0.0
         return True
 
     def _get_hyperparameter_proposal(self):
@@ -506,8 +524,9 @@ exponential law. Explicitly state a noise reference for your user target \
 
     def _validvpvs(self, vpvs):
         # only works if vpvs-priors is a range
-        if vpvs < self.priors['vpvs'][0] or \
-                vpvs > self.priors['vpvs'][1]:
+        if ((np.any(vpvs < self.priors['vpvs'][0])) | (np.any(vpvs > self.priors['vpvs'][1]))):
+        # if vpvs < self.priors['vpvs'][0] or \
+        #         vpvs > self.priors['vpvs'][1]:
             return False
         return True
 
@@ -516,7 +535,7 @@ exponential law. Explicitly state a noise reference for your user target \
         ind_row = self.rstate.randint(0, 3)
         # ind_col = self.rstate.randint(0, ani[0].size)
         # choose ind_col by anisotropic flag
-        ind_col = np.random.choice(np.where(self.currentaniflag==0))
+        ind_col = np.random.choice(np.where(self.tempaniflag==0)[0])
         ani_mod = self.rstate.normal(0, self.propdist[5])
         ani[ind_row, ind_col] = ani[ind_row, ind_col] + ani_mod
         return ani, ind_row, ind_col
@@ -537,35 +556,45 @@ exponential law. Explicitly state a noise reference for your user target \
                 return False
         return True
 
-    def _ani_vpvs_layerbirth(self, ind):
+    def _ani_vpvs_layerbirth(self, ind, z_ani_flag):
         if self.ani_flag:
             ani = copy.copy(self.currentani)
-            ani_before = ani[:, ind]
-            ani_birth = (ani_before + self.rstate.normal(0, self.propdist[5], size=3)).reshape((3, 1))
-            self.currentani = np.concatenate((ani, ani_birth))
+            if z_ani_flag:
+                ani_before = ani[:, ind]
+                ani_birth = (ani_before + self.rstate.normal(0, self.propdist[5], size=3)).reshape((3, 1))
+            else:
+                ani_birth = np.zeros((3, 1))
+            self.tempani = np.concatenate((ani, ani_birth), axis=1)
 
         vpvs = copy.copy(self.currentvpvs)
         vpvs_before = vpvs[ind]
         vpvs_birth = vpvs_before + self.rstate.normal(0, self.propdist[4])
-        self.currentvpvs = np.concatenate((vpvs, [vpvs_birth]))
+        self.tempvpvs = np.concatenate((vpvs, [vpvs_birth]))
         return
     
     def _ani_vpvs_layerdeath(self, ind_death):
         if self.ani_flag:
             ani = copy.copy(self.currentani)
-            self.currentani = np.delete(ani, ind_death, axis=1)
+            self.tempani = np.delete(ani, ind_death, axis=1)
 
         vpvs = copy.copy(self.currentvpvs)
-        self.currentvpvs = np.delete(vpvs, ind_death)
+        self.tempvpvs = np.delete(vpvs, ind_death)
         return
 
-    def _sort_ani_vpvs(self, ind):
-        if self.ani_flag:
-            ani = copy.copy(self.currentani)
-            self.currentani  = ani[:, ind]
+    def _sort_ani_vpvs(self, ind, modify):
+        if modify in ['birth', 'death']:
+            vpvs = self.tempvpvs
+            if self.ani_flag:
+                ani = self.tempani
+                self.tempani  = ani[:, ind]
+            self.tempvpvs = vpvs[ind]
+        else:
+            vpvs = copy.copy(self.currentvpvs)
+            if self.ani_flag:
+                ani = copy.copy(self.currentani)
+                self.currentani  = ani[:, ind]
+            self.currentvpvs = vpvs[ind]
 
-        vpvs = copy.copy(self.currentvpvs)
-        self.currentvpvs = vpvs[ind]
         return
 
 # accept / save current models
@@ -613,6 +642,7 @@ exponential law. Explicitly state a noise reference for your user target \
             # only velocity or thickness changes are made
             # also used for noise changes
             alpha = self.targets.proposallikelihood - self.currentlikelihood
+            
 
         elif modify in ['birth', ]:
             theta = self.propdist[2]  # Gaussian distribution
@@ -636,13 +666,15 @@ exponential law. Explicitly state a noise reference for your user target \
 
     def accept_as_currentmodel(self, model, noise, vpvs, **kwargs):
         """Assign currentmodel and currentvalues to self."""
-        ani = kwargs.get(ani, False)
+        ani = kwargs.get('ani', np.zeros((3, vpvs.size)))
+        flag = kwargs.get('flag', np.ones(vpvs.size))
         self.currentmisfits = self.targets.proposalmisfits
         self.currentlikelihood = self.targets.proposallikelihood
         self.currentmodel = model
         self.currentnoise = noise
         self.currentvpvs = vpvs
         self.currentani = ani
+        self.currentaniflag = flag
         self.lastmoditer = self.iiter
 
     def append_currentmodel(self):
@@ -651,27 +683,42 @@ exponential law. Explicitly state a noise reference for your user target \
         self.chainmisfits[self.n, :] = self.currentmisfits
         self.chainlikes[self.n] = self.currentlikelihood
         self.chainnoise[self.n, :] = self.currentnoise
-        self.chainvpvs[self.n, :] = self.currentvpvs
-        self.chainani[self.n, :, :] = self.currentani
+        self.chainvpvs[self.n, :int(self.currentmodel.size/2)] = self.currentvpvs
+        if self.ani_flag:
+            self.chainani[self.n, :, :int(self.currentmodel.size/2)] = self.currentani
         self.chainiter[self.n] = self.iiter
         self.n += 1
 
 # run optimization
 
     def iterate(self):
-        if self.iiter < (-self.iter_phase1 + (self.iterations * 0.01)):
+        if (self.iiter < (-self.iter_phase1 + (self.iterations * 0.01))) & (np.any(self.currentaniflag==0)): 
             # only allow vs and z modifications the first 1 % of iterations
             modify = self.rstate.choice(['vsmod', 'zvmod'] + self.noisemods +
                                         self.vpvsmods + self.animods)
+        elif self.iiter < (-self.iter_phase1 + (self.iterations * 0.01)):
+            # only allow vs and z modifications the first 1 % of iterations
+            modify = self.rstate.choice(['vsmod', 'zvmod'] + self.noisemods +
+                                        self.vpvsmods)
+        elif np.any(self.currentaniflag==0):
+            modify = self.rstate.choice(self.modifications + self.animods)
         else:
             modify = self.rstate.choice(self.modifications)
 
+        self.tempaniflag = self.currentaniflag
+        proposalani = self.currentani
+
         if modify in self.modelmods:
             proposalmodel = self._get_modelproposal(modify)
+            if modify in ['birth', 'death']:
+                proposalvpvs = self.tempvpvs
+                if self.ani_flag:
+                    proposalani = self.tempani
+            else:
+                proposalvpvs = self.currentvpvs
+                proposalani = self.currentani
             proposalnoise = self.currentnoise
-            proposalvpvs = self.currentvpvs
-            proposalani = self.currentani
-            if not self._validmodel(proposalmodel):
+            if not self._validmodel(proposalmodel, modify=modify):
                 proposalmodel = None
 
         elif modify in self.noisemods:
@@ -708,7 +755,7 @@ exponential law. Explicitly state a noise reference for your user target \
 
         # compute synthetic data and likelihood, misfit
         vp, vs, h = Model.get_vp_vs_h(proposalmodel, proposalvpvs, self.mantle)
-        self.targets.evaluate(h=h, vp=vp, vs=vs, noise=proposalnoise, ani=proposalani, flag=self.currentaniflag)
+        self.targets.evaluate(h=h, vp=vp, vs=vs, noise=proposalnoise, ani=proposalani, flag=self.tempaniflag)
 
         paridx = PAR_MAP[modify]
         self.proposed[paridx] += 1
@@ -719,13 +766,15 @@ exponential law. Explicitly state a noise reference for your user target \
         # these are log values ! alpha is log.
         u = np.log(self.rstate.uniform(0, 1))
         alpha = self.get_acceptance_probability(modify)
-
+        # print(f'proposallikelihood: [{self.targets.proposallikelihood}]; currentlikelihood: [{self.currentlikelihood}]')
+        # print(f'u: [{u}]; alpha: [{alpha}] \n')
         # #### _____________________________________________________________
         if u < alpha:
             # always the case if self.jointlike > self.bestlike (alpha>1)
-            self.accept_as_currentmodel(proposalmodel, proposalnoise, proposalvpvs, ani=proposalani)
+            self.accept_as_currentmodel(proposalmodel, proposalnoise, proposalvpvs, ani=proposalani, flag=self.tempaniflag)
             self.append_currentmodel()
             self.accepted[paridx] += 1
+            # print(self.n)
 
         # print inversion status information
         if self.iiter % 5000 == 0:
@@ -756,10 +805,10 @@ exponential law. Explicitly state a noise reference for your user target \
 
         self.modelmods = ['vsmod', 'zvmod', 'birth', 'death']
         self.noisemods = [] if len(self.noiseinds) == 0 else ['noise']
-        self.vpvsmods = [] if type(self.priors['vpvs']) == np.float else ['vpvs']
+        self.vpvsmods = [] if type(self.priors['vpvs']) == float else ['vpvs']
         self.animods = ['ani'] if self.ani_flag else []
         
-        self.modifications = self.modelmods + self.noisemods + self.vpvsmods + self.animods
+        self.modifications = self.modelmods + self.noisemods + self.vpvsmods
 
         self.accepted = np.zeros(len(self.propdist))
         self.proposed = np.zeros(len(self.propdist))
@@ -775,13 +824,14 @@ exponential law. Explicitly state a noise reference for your user target \
         self.chainlikes = self.chainlikes[:self.n]
         self.chainnoise = self.chainnoise[:self.n, :]
         self.chainvpvs = self.chainvpvs[:self.n, :]
-        self.chainani = self.chainani[:self.n, :, :]
+        if self.ani_flag:
+            self.chainani = self.chainani[:self.n, :, :]
         self.chainiter = self.chainiter[:self.n]
 
         # only consider models after burnin phase
         p1ind = np.where(self.chainiter < 0)[0]
         p2ind = np.where(self.chainiter >= 0)[0]
-
+        # print(p1ind, p2ind)
         if p1ind.size != 0:
             wmodels, wlikes, wmisfits, wnoise, wvpvs, wani = self.get_weightedvalues(
                 pind=p1ind, finaliter=0)
@@ -821,12 +871,15 @@ exponential law. Explicitly state a noise reference for your user target \
         plikes = self.chainlikes[pind]
         pnoise = self.chainnoise[pind]
         pvpvs = self.chainvpvs[pind]
-        pani = self.chainani[pind]
+        if self.ani_flag:
+            pani = self.chainani[pind]
+        else:
+            pani = None
         pweights = np.diff(np.concatenate((self.chainiter[pind], [finaliter])))
 
         wmodels, wlikes, wmisfits, wnoise, wvpvs, wani = ModelMatrix.get_weightedvalues(
             pweights, models=pmodels, likes=plikes, misfits=pmisfits,
-            noiseparams=pnoise, vpvs=pvpvs, ani=pani)
+            noiseparams=pnoise, vpvss=pvpvs, anis=pani)
         return wmodels, wlikes, wmisfits, wnoise, wvpvs, wani
 
     def save_finalmodels(self):

@@ -226,7 +226,7 @@ class ModelMatrix(object):
 
     @staticmethod
     def get_weightedvalues(weights, models=None, likes=None, misfits=None,
-                           noiseparams=None, vpvs=None, anis=None):
+                           noiseparams=None, vpvss=None, anis=None):
         """
         Return weighted matrix of models, misfits and noiseparams, and weighted
         vectors of likelihoods.
@@ -268,12 +268,12 @@ class ModelMatrix(object):
                     wnoise[n] = noisepars
                     n += 1
 
-        if vpvs is not None:
+        if vpvss is not None:
             # wvpvs = np.repeat(vpvs, weights)
-            wvpvs = np.ones((np.sum(weights), vpvs[0].size)) * np.nan
+            wvpvs = np.ones((np.sum(weights), vpvss[0].size)) * np.nan
 
             n = 0
-            for i, vpvs in enumerate(vpvs):
+            for i, vpvs in enumerate(vpvss):
                 for rep in range(weights[i]):
                     wvpvs[n] = vpvs
                     n += 1

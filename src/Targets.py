@@ -184,11 +184,16 @@ class Valuation(object):
         return c_inv, logc_det
 
     @staticmethod
-    def get_likelihood(yobs, ymod, c_inv, logc_det):
+    def get_likelihood(yobs, ymod, c_inv, logc_det, ref):
         """Return log-likelihood."""
         ydiff = ymod - yobs
-        madist = (ydiff.T).dot(c_inv).dot(ydiff)  # Mahalanobis distance
-        logL_part = -0.5 * (yobs.size * np.log(2*np.pi) + logc_det)
+        if ref=='iterrf':
+            halfsize = int(yobs.shape[-1] / 2)
+            madist = ((ydiff[:, :halfsize]).dot(c_inv).dot(ydiff[:, :halfsize].T) + \
+                            (ydiff[:, -halfsize:]).dot(c_inv).dot(ydiff[:, -halfsize:].T)).trace()
+        else:
+            madist = (ydiff.T).dot(c_inv).dot(ydiff)  # Mahalanobis distance
+        logL_part = -0.5 * (yobs.shape[-1] * np.log(2*np.pi) + logc_det)
         logL = logL_part - madist / 2.
 
         return logL
@@ -238,7 +243,7 @@ class SingleTarget(object):
             return
 
         self.valuation.likelihood = self.valuation.get_likelihood(
-            self.obsdata.y, self.moddata.y, c_inv, logc_det)
+            self.obsdata.y, self.moddata.y, c_inv, logc_det, self.ref)
 
     def plot(self, ax=None, mod=True):
         if ax is None:
@@ -336,47 +341,47 @@ class JointTarget(object):
         rho = kwargs.pop('rho', 
                          1.6612*vp - 0.4721*vp**2 + 0.0671*vp**3 - 0.0043*vp**4\
                             + 0.000103*vp**5)
-        ani = kwargs.get('ani', None)
-        flag = kwargs.get('flag', None)
+        # ani = kwargs.get('ani', None)
+        # flag = kwargs.get('flag', None)
 
         logL = 0
         for n, target in enumerate(self.targets):
-            target.moddata.calc_synth(h=h, vp=vp, vs=vs, rho=rho, ani=ani, flag=flag)
-
+            target.moddata.calc_synth(h=h, vp=vp, vs=vs, rho=rho, **kwargs)
+            # print(f'h:[{h}]; vp:[{vp}]; vs:[{vs}]')
             if not target._moddata_valid():
                 self.proposallikelihood = -1e15
                 self.proposalmisfits = [1e15]*(self.ntargets+1)
                 return
 
             target.calc_misfit()
-
-            size = target.obsdata.y.size
+            size = target.obsdata.y.shape[-1]
             yerr = target.obsdata.yerr
 
-            corr, sigma = noise[2*n:2*n+2]
-            c_inv, logc_det = target.get_covariance(
-                sigma=sigma, size=size, yerr=yerr, corr=corr)
-
+            ydiff = target.moddata.y - target.obsdata.y
+            # print(f'obs maximum: [{np.max(target.obsdata.y)}]; syn maximum: [{np.max(target.moddata.y)}]')
             if target.ref == 'iterrf':
                 halfsize = int(size / 2)
-                ydiff = target.moddata.y - target.obsdata.y
-                madist = (ydiff[:, :halfsize].T).dot(c_inv).dot(ydiff[:, :halfsize]) + \
-                            (ydiff[:, -halfsize:].T).dot(c_inv).dot(ydiff[:, -halfsize:])
+                corr, sigma = noise[2*n:2*n+2]
+                c_inv, logc_det = target.get_covariance(
+                    sigma=sigma, size=halfsize, yerr=yerr, corr=corr)
+            
+                madist = (((ydiff[:, :halfsize]).dot(c_inv).dot(ydiff[:, :halfsize].T) + \
+                            (ydiff[:, -halfsize:]).dot(c_inv).dot(ydiff[:, -halfsize:].T)).trace())
+                logL_part = -0.5 * (halfsize * np.log(2*np.pi) + logc_det)
+            else:
+                corr, sigma = noise[2*n:2*n+2]
+                c_inv, logc_det = target.get_covariance(
+                    sigma=sigma, size=size, yerr=yerr, corr=corr)
+                
+                madist = (ydiff.T).dot(c_inv).dot(ydiff)
                 logL_part = -0.5 * (size * np.log(2*np.pi) + logc_det)
-                logL_target = (logL_part - madist / 2.)
-
-                logL += logL_target
-                continue
-
-            ydiff = target.moddata.y - target.obsdata.y
-            madist = (ydiff.T).dot(c_inv).dot(ydiff)
-            logL_part = -0.5 * (size * np.log(2*np.pi) + logc_det)
+            
             logL_target = (logL_part - madist / 2.)
-
             logL += logL_target
 
         self.proposallikelihood = logL
         self.proposalmisfits = self.get_misfits()
+        # print(f'logL_part: [{logL_part}]; madist: [{madist}]; misfit: [{self.proposalmisfits}]')
 
     def plot_obsdata(self, ax=None, mod=False):
         """Return subplot of all targets."""
