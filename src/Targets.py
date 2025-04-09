@@ -184,10 +184,11 @@ class Valuation(object):
         return c_inv, logc_det
 
     @staticmethod
-    def get_likelihood(yobs, ymod, c_inv, logc_det, ref):
+    def get_likelihood(yobs, ymod, c_inv, logc_det, ref, traceflag=False):
         """Return log-likelihood."""
         ydiff = ymod - yobs
         if ref=='iterrf':
+            ydiff = ydiff[traceflag]
             halfsize = int(yobs.shape[-1] / 2)
             madist = ((ydiff[:, :halfsize]).dot(c_inv).dot(ydiff[:, :halfsize].T) + \
                             (ydiff[:, -halfsize:]).dot(c_inv).dot(ydiff[:, -halfsize:].T)).trace()
@@ -205,11 +206,14 @@ class SingleTarget(object):
     likelihood, and also a plotting method. These can be used when initiating
     and testing your targets.
     """
-    def __init__(self, x, y, ref, yerr=None):
+    def __init__(self, x, y, ref, yerr=None, traceflag=False):
         self.ref = ref
         self.obsdata = ObservedData(x=x, y=y, yerr=yerr)
         self.moddata = ModeledData(obsx=x, ref=ref)
         self.valuation = Valuation()
+
+        if (ref == 'iterrf') and (np.any(traceflag) if isinstance(traceflag, np.ndarray) else (traceflag is not False)):
+            self.traceflag = np.where(traceflag!=0)[0]
 
         logger.info("Initiated target: %s (ref: %s)"
                     % (self.__class__.__name__, self.ref))
@@ -234,8 +238,12 @@ class SingleTarget(object):
             self.valuation.misfit = 1e15
             return
 
-        self.valuation.misfit = self.valuation.get_rms(
-            self.obsdata.y, self.moddata.y)
+        if self.ref=='iterrf':
+            self.valuation.misfit = self.valuation.get_rms(
+                self.obsdata.y[self.traceflag], self.moddata.y[self.traceflag])
+        else:
+            self.valuation.misfit = self.valuation.get_rms(
+                self.obsdata.y, self.moddata.y)
 
     def calc_likelihood(self, c_inv, logc_det):
         if not self._moddata_valid():
@@ -243,7 +251,7 @@ class SingleTarget(object):
             return
 
         self.valuation.likelihood = self.valuation.get_likelihood(
-            self.obsdata.y, self.moddata.y, c_inv, logc_det, self.ref)
+            self.obsdata.y, self.moddata.y, c_inv, logc_det, self.ref, self.traceflag)
 
     def plot(self, ax=None, mod=True):
         if ax is None:
@@ -251,12 +259,13 @@ class SingleTarget(object):
 
         # ax.plot(self.obsdata.x, self.obsdata.y, label='obs',
         #         marker='x', ms=1, color='blue', lw=0.8, zorder=1000)
-        ax.errorbar(self.obsdata.x, self.obsdata.y, yerr=self.obsdata.yerr,
+        yobs = np.average(self.obsdata.y, axis=0)[:len(self.obsdata.x)] if self.obsdata.y.ndim != 1 else self.obsdata.y
+        ax.errorbar(self.obsdata.x, yobs, yerr=self.obsdata.yerr,
                     label='obs', marker='x', ms=1, color='blue', lw=0.8,
                     elinewidth=0.7, zorder=1000)
-
         if mod:
-            ax.plot(self.moddata.x, self.moddata.y, label='mod',
+            ymod = np.average(self.moddata.y, axis=0)[:len(self.obsdata.x)] if self.moddata.y.ndim != 1 else self.moddata.y
+            ax.plot(self.moddata.x, ymod, label='mod',
                     marker='o',  ms=1, color='red', lw=0.7, alpha=0.5)
 
         ax.set_ylabel(self.ref)
@@ -315,9 +324,9 @@ class SReceiverFunction(SingleTarget):
 class IterReceiverFunction(SingleTarget):
     noiseref = 'rf'
 
-    def __init__(self, x, y, yerr=None):
+    def __init__(self, x, y, yerr=None, traceflag=False):
         ref = 'iterrf'
-        SingleTarget.__init__(self, x, y, ref, yerr=yerr)
+        SingleTarget.__init__(self, x, y, ref, yerr=yerr, traceflag=traceflag) # traceflag should in a format of `[0, 1, 1, 1, 0, 1, 1]`
         
 class JointTarget(object):
     """A JointTarget object contains a list of SingleTargets and is responsible
@@ -343,11 +352,11 @@ class JointTarget(object):
                             + 0.000103*vp**5)
         # ani = kwargs.get('ani', None)
         # flag = kwargs.get('flag', None)
-
+        
         logL = 0
         for n, target in enumerate(self.targets):
             target.moddata.calc_synth(h=h, vp=vp, vs=vs, rho=rho, **kwargs)
-            # print(f'h:[{h}]; vp:[{vp}]; vs:[{vs}]')
+#             print(f'h:[{h}]; vp:[{vp}]; vs:[{vs}]')
             if not target._moddata_valid():
                 self.proposallikelihood = -1e15
                 self.proposalmisfits = [1e15]*(self.ntargets+1)
@@ -358,15 +367,16 @@ class JointTarget(object):
             yerr = target.obsdata.yerr
 
             ydiff = target.moddata.y - target.obsdata.y
-            # print(f'obs maximum: [{np.max(target.obsdata.y)}]; syn maximum: [{np.max(target.moddata.y)}]')
+#             print(f'obs maximum: [{np.max(target.obsdata.y)}]; syn maximum: [{np.max(target.moddata.y)}]')
             if target.ref == 'iterrf':
+                ydiff = ydiff[target.traceflag]
                 halfsize = int(size / 2)
                 corr, sigma = noise[2*n:2*n+2]
                 c_inv, logc_det = target.get_covariance(
                     sigma=sigma, size=halfsize, yerr=yerr, corr=corr)
             
                 madist = (((ydiff[:, :halfsize]).dot(c_inv).dot(ydiff[:, :halfsize].T) + \
-                            (ydiff[:, -halfsize:]).dot(c_inv).dot(ydiff[:, -halfsize:].T)).trace())
+                            (ydiff[:, -halfsize:]).dot(c_inv).dot(ydiff[:, -halfsize:].T)).trace()) / np.sum(target.traceflag) #TOTALLY 73 TRACES
                 logL_part = -0.5 * (halfsize * np.log(2*np.pi) + logc_det)
             else:
                 corr, sigma = noise[2*n:2*n+2]
@@ -381,7 +391,9 @@ class JointTarget(object):
 
         self.proposallikelihood = logL
         self.proposalmisfits = self.get_misfits()
-        # print(f'logL_part: [{logL_part}]; madist: [{madist}]; misfit: [{self.proposalmisfits}]')
+        # print(f'c_inv: [{c_inv.trace()}]; moddata_ave: [{np.average(target.moddata.y)}]; obsdata_ave: [{np.average(target.obsdata.y)}] \n',
+        #       f'moddata_max: [{np.max(target.moddata.y)}[{np.argmax(target.moddata.y)}]]; obsdata_max: [{np.max(target.obsdata.y)}[{np.argmax(target.obsdata.y)}]]')
+        print(f'logL_part: [{logL_part}]; madist: [{madist}]; misfit: [{self.proposalmisfits}]; like: [{self.proposallikelihood}]')
 
     def plot_obsdata(self, ax=None, mod=False):
         """Return subplot of all targets."""

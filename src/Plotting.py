@@ -70,7 +70,8 @@ class PlotFromStorage(object):
         self.refmodel = {'model': None,
                          'nlays': None,
                          'noise': None,
-                         'vpvs': None}
+                         'vpvs': None,
+                         'ani': None}
 
     def read_config(self, configfile):
         return utils.read_config(configfile)
@@ -91,7 +92,7 @@ class PlotFromStorage(object):
             self.outliers = np.zeros(0)
 
     def init_filelists(self):
-        filetypes = ['models', 'likes', 'misfits', 'noise', 'vpvs']
+        filetypes = ['models', 'likes', 'misfits', 'noise', 'vpvs', 'ani']
         filepattern = op.join(self.datapath, 'c???_p%d%s.npy')
         files = []
         size = []
@@ -104,7 +105,7 @@ class PlotFromStorage(object):
 
         if len(set(size)) == 1:
             self.modfiles, self.likefiles, self.misfiles, self.noisefiles, \
-                self.vpvsfiles = files
+                self.vpvsfiles, self.anifiles = files
         else:
             logger.info('You are missing files. Please check ' +
                         '"%s" for completeness.' % self.datapath)
@@ -175,11 +176,11 @@ class PlotFromStorage(object):
         while all models are evenly thinned.
         """
 
-        def save_finalmodels(models, likes, misfits, noise, vpvs):
+        def save_finalmodels(models, likes, misfits, noise, vpvs, ani):
             """Save chainmodels as pkl file"""
-            names = ['models', 'likes', 'misfits', 'noise', 'vpvs']
+            names = ['models', 'likes', 'misfits', 'noise', 'vpvs', 'ani']
             print('> Saving posterior distribution.')
-            for i, data in enumerate([models, likes, misfits, noise, vpvs]):
+            for i, data in enumerate([models, likes, misfits, noise, vpvs, ani]):
                 outfile = op.join(self.datapath, 'c_%s' % names[i])
                 np.save(outfile, data)
                 print(outfile)
@@ -204,7 +205,9 @@ class PlotFromStorage(object):
         allmodels = None
         alllikes = np.ones(maxmodels) * np.nan
         allnoise = np.ones((maxmodels, self.ntargets*2)) * np.nan
-        allvpvs = np.ones(maxmodels) * np.nan
+        # allvpvs = np.ones(maxmodels) * np.nan
+        allvpvs = None
+        allani = None
 
         start = 0
         chainidxs, nmodels = self._get_chaininfo()
@@ -220,7 +223,7 @@ class PlotFromStorage(object):
 
             chainfiles = [self.modfiles[1][i], self.misfiles[1][i],
                           self.likefiles[1][i], self.noisefiles[1][i],
-                          self.vpvsfiles[1][i]]
+                          self.vpvsfiles[1][i], self.anifiles[1][i]]
 
             for c, chainfile in enumerate(chainfiles):
                 _, _, ftype = self._return_c_p_t(chainfile)
@@ -248,8 +251,14 @@ class PlotFromStorage(object):
                     allnoise[start:end, :] = data
 
                 elif ftype == 'vpvs':
-                    allvpvs[start:end] = data
+                    if allvpvs is None:
+                        allvpvs = np.ones((maxmodels, data[0].size)) * np.nan
+                    allvpvs[start:end, :] = data
 
+                elif ftype == 'ani':
+                    if allani is None:
+                        allani = np.ones((maxmodels, data[0].size)).reshape(maxmodels, 3, -1) * np.nan
+                    allani[start:end, :, :] = data
             start = end
 
         # exclude nans
@@ -257,9 +266,10 @@ class PlotFromStorage(object):
         allmisfits = allmisfits[~np.isnan(alllikes)]
         allnoise = allnoise[~np.isnan(alllikes)]
         allvpvs = allvpvs[~np.isnan(alllikes)]
+        allani = allani[~np.isnan(alllikes)]
         alllikes = alllikes[~np.isnan(alllikes)]
 
-        save_finalmodels(allmodels, alllikes, allmisfits, allnoise, allvpvs)
+        save_finalmodels(allmodels, alllikes, allmisfits, allnoise, allvpvs, allani)
 
     def _unique_legend(self, handles, labels):
         # if a key is double, the last handle in the row is returned to the key
@@ -424,7 +434,7 @@ class PlotFromStorage(object):
         files = self.vpvsfiles[0][:nchains] + self.vpvsfiles[1][:nchains]
 
         fig, ax = plt.subplots(figsize=(7, 4))
-        ax = self._plot_iitervalues(files, ax)
+        ax = self._plot_iitervalues(files, ax, layer=True)
         ax.set_ylabel('Vp / Vs')
         return fig
 
@@ -434,7 +444,7 @@ class PlotFromStorage(object):
 # Considering weighted models.
 
     @staticmethod
-    def _plot_bestmodels(bestmodels, dep_int=None):
+    def _plot_bestmodels(bestmodels, dep_int=None, vpvs=None):
         fig, ax = plt.subplots(figsize=(4.4, 7))
 
         models = ['mean', 'median', 'stdminmax']
@@ -442,8 +452,8 @@ class PlotFromStorage(object):
         ls = ['-', '--', ':']
         lw = [1, 1, 1]
 
-        singlemodels = ModelMatrix.get_singlemodels(bestmodels, dep_int)
-
+        singlemodels = ModelMatrix.get_singlemodels(bestmodels, dep_int, vpvs=vpvs)
+        
         for i, model in enumerate(models):
             vs, dep = singlemodels[model]
 
@@ -479,9 +489,12 @@ class PlotFromStorage(object):
 
         # get interfaces, #first
         models2 = ModelMatrix._replace_zvnoi_h(models)
-        models2 = np.array([model[~np.isnan(model)] for model in models2])
-        yinterf = np.array([np.cumsum(model[int(model.size/2):-1])
-                            for model in models2])
+        # models2 = np.array([model[~np.isnan(model)] for model in models2])
+        # yinterf = np.array([np.cumsum(model[int(model.size/2):-1])
+        #                     for model in models2])
+        models2 = [model[~np.isnan(model)] for model in models2]
+        yinterf = [np.cumsum(model[int(model.size/2):-1])
+                            for model in models2]
         yinterf = np.concatenate(yinterf)
 
         vss_int, deps_int = ModelMatrix.get_interpmodels(models, dep_int)
@@ -520,10 +533,13 @@ class PlotFromStorage(object):
         axes[0].legend(loc=3)
 
         # histogram for interfaces
-        data = axes[1].hist(yinterf, bins=depbins, orientation='horizontal',
+        # data = axes[1].hist(yinterf, bins=depbins, orientation='horizontal',
+        #                     color='lightgray', alpha=0.7,
+        #                     edgecolor='k')
+        # bins, lay_bin, _ = np.array(data).T
+        bins, lay_bin, _  = axes[1].hist(yinterf, bins=depbins, orientation='horizontal',
                             color='lightgray', alpha=0.7,
                             edgecolor='k')
-        bins, lay_bin, _ = np.array(data).T
         center_lay = (lay_bin[:-1] + lay_bin[1:]) / 2.
 
         axes[0].set_ylabel('Depth in km')
@@ -609,7 +625,8 @@ class PlotFromStorage(object):
         models, = self._get_posterior_data(['models'], final, chainidx)
 
         # get interfaces
-        models = np.array([model[~np.isnan(model)] for model in models])
+        # models = np.array([model[~np.isnan(model)] for model in models])
+        models = [model[~np.isnan(model)] for model in models]
         layers = np.array([(model.size/2 - 1) for model in models])
 
         bins = np.arange(np.min(layers), np.max(layers)+2)-0.5
@@ -624,8 +641,22 @@ class PlotFromStorage(object):
         return ax.figure
 
     @tryexcept
-    def plot_posterior_vpvs(self, final=True, chainidx=0):
+    def plot_posterior_vpvs(self, final=True, chainidx=0, depint=1):
         vpvs, = self._get_posterior_data(['vpvs'], final, chainidx)
+        if vpvs.ndim == 2:
+            models, = self._get_posterior_data(['models'], final, chainidx)
+            if final:
+                nchains = self.initparams['nchains'] - self.outliers.size
+            else:
+                nchains = 1
+
+            dep_int = np.arange(self.priors['z'][0],
+                                self.priors['z'][1] + depint, depint)
+            fig, ax = self._plot_bestmodels(models, dep_int, vpvs=vpvs) #Need Modify
+            ax.set_ylim(self.priors['z'][::-1])
+            ax.grid(color='gray', alpha=0.6, ls=':', lw=0.5)
+            ax.set_title('%d vpvs from %d chains' % (len(vpvs), nchains))
+            return fig
         bins = 20
         formatter = '%.2f'
 
@@ -917,10 +948,11 @@ class PlotFromStorage(object):
         for i, modfile in enumerate(self.modfiles[1][:nchains]):
             chainidx, _, _ = self._return_c_p_t(modfile)
             models = np.load(modfile)
-            vpvs = np.load(modfile.replace('models', 'vpvs')).T
+            # vpvs = np.load(modfile.replace('models', 'vpvs')).T
+            vpvs = np.load(modfile.replace('models', 'vpvs'))
             currentvpvs = vpvs[-1]
             currentmodel = models[-1]
-
+            # print(currentmodel)
             color = color_list[i]
             vp, vs, h = Model.get_vp_vs_h(currentmodel, currentvpvs, self.mantle)
             cvp, cvs, cdepth = Model.get_stepmodel_from_h(h=h, vs=vs, vp=vp)
@@ -946,26 +978,26 @@ class PlotFromStorage(object):
         base = cm.get_cmap(name='rainbow')
         color_list = base(np.linspace(0, 1, nchains))
         targets = Targets.JointTarget(targets=self.targets)
-
+        
         fig, ax = targets.plot_obsdata(mod=False)
-
+        
         for i, modfile in enumerate(self.modfiles[1][:nchains]):
             color = color_list[i]
             chainidx, _, _ = self._return_c_p_t(modfile)
             models = np.load(modfile)
-            vpvs = np.load(modfile.replace('models', 'vpvs')).T
+            # vpvs = np.load(modfile.replace('models', 'vpvs')).T
+            vpvs = np.load(modfile.replace('models', 'vpvs'))
             currentvpvs = vpvs[-1]
             currentmodel = models[-1]
-
             vp, vs, h = Model.get_vp_vs_h(currentmodel, currentvpvs, self.mantle)
             rho = vp * 0.32 + 0.77
-
             jmisfit = 0
             for n, target in enumerate(targets.targets):
                 xmod, ymod = target.moddata.plugin.run_model(
                     h=h, vp=vp, vs=vs, rho=rho)
-
-                yobs = target.obsdata.y
+                if ymod.ndim != 1:
+                    ymod = np.average(ymod, axis=0)[:len(target.obsdata.x)]
+                yobs = np.average(target.obsdata.y, axis=0)[:len(target.obsdata.x)] if target.obsdata.y.ndim != 1 else target.obsdata.y
                 misfit = target.valuation.get_rms(yobs, ymod)
                 jmisfit += misfit
 

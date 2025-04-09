@@ -10,6 +10,7 @@ def iterdecon(traces, baz, nfft, gaussF, odina_flag,
               tshift=1, itmax=200, minderr=0.01, use_bic=True, 
               dt_bare=None):
     forward_list = np.zeros((len(baz), 2, nfft), dtype=float)
+    gaussF_nor = fft(ifft(gaussF).real / np.max(np.abs(ifft(gaussF).real)))
     for tr in range(len(baz)):
         stream = traces[tr, :, :nfft]
         RF_output = np.empty((2, nfft))
@@ -76,9 +77,11 @@ def iterdecon(traces, baz, nfft, gaussF, odina_flag,
                 # if len(Bic)!=0: final_index = np.argmin(Bic)
                 # rf = ifft(fft(RFS[final_index])*gaussF).real
                 if len(Bic)!=0: final_index = np.argmin(Bic[::-1])
-                rf = ifft(fft(RFS[-final_index-1])*gaussF).real
+                # rf = ifft(fft(RFS[-final_index-1])*gaussF).real
+                rf = ifft(fft(RFS[-final_index-1])*gaussF_nor).real
             else :
-                rf = ifft(fft(RFS[-1])*gaussF).real
+                # rf = ifft(fft(RFS[-1])*gaussF).real
+                rf = ifft(fft(RFS[-1])*gaussF_nor).real
             # Phase shift
             # rf = phaseshift(rf, nfft, dt_bare, tshift)
             shift_i = round(tshift/dt_bare)

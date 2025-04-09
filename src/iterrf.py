@@ -23,7 +23,7 @@ class IterRF(object):
         # the dictionary can be updated by the user
         self.modelparams.update(
             {'gauss': 5.5,
-             'odina_flag': 1,
+            #  'odina_flag': 1,
              })
         
         self.keys = {'z': '%.2f',
@@ -73,10 +73,11 @@ class IterRF(object):
         strike = np.zeros(h.size)
         dip = np.zeros(h.size)
         flag = params.get('flag', np.ones(h.size, dtype='int'))
-        ani = params.get('ani', np.zeros(h.size))[0, :]
-        trend = params.get('ani', np.zeros(h.size))[1, :]
-        plunge = params.get('ani', np.zeros(h.size))[2, :]
-
+        ani = params.get('ani', np.zeros((3, h.size)))[0, :]
+        trend = params.get('ani', np.zeros((3, h.size)))[1, :]
+        plunge = params.get('ani', np.zeros((3, h.size)))[2, :]
+        if 'odina_flag' in params:
+            self.set_modelparams(odina_flag=params['odina_flag'])
         # try:
         #     print((np.concatenate((h, vp, vs, rho,  strike, dip, flag, ani, trend, plunge), axis=0)).reshape((10, -1)))
         # except:

@@ -44,7 +44,8 @@ class Model(object):
         z_disc = (z_vnoi[:n-1] + z_vnoi[1:n]) / 2.
         h_lay = (z_disc - np.concatenate(([0], z_disc[:-1])))
         h = np.concatenate((h_lay, [0]))
-
+        if isinstance(vpvs, np.ndarray):
+            vpvs = vpvs[~np.isnan(vpvs)]
         if mantle is not None:
             vp = Model.get_vp(vs, vpvs, mantle)
         else:
@@ -98,11 +99,15 @@ class Model(object):
         Model is a vector of the parameters.
         """
         vp_step, vs_step, dep_step = Model.get_stepmodel(model, vpvs, mantle)
+        if isinstance(vpvs, np.ndarray):
+            vpvs = vpvs[~np.isnan(vpvs)]
+            vpvs_step = np.concatenate([(vps, vps) for vps in vpvs])
+            vpvs_int = np.interp(dep_int, dep_step, vpvs_step)
+            return vpvs_int
         vs_int = np.interp(dep_int, dep_step, vs_step)
         vp_int = np.interp(dep_int, dep_step, vp_step)
 
         return vp_int, vs_int
-
 
 class ModelMatrix(object):
     """
@@ -140,7 +145,7 @@ class ModelMatrix(object):
         return models
 
     @staticmethod
-    def get_interpmodels(models, dep_int):
+    def get_interpmodels(models, dep_int, vpvs=None):
         """Return model matrix with interpolated stepmodels.
 
         Each model in the matrix is parametrized with (vs, z_vnoi)."""
@@ -149,6 +154,15 @@ class ModelMatrix(object):
         deps_int = np.repeat([dep_int], len(models), axis=0)
         vss_int = np.empty((len(models), dep_int.size))
 
+        if vpvs is not None:
+            vpvss_int = np.empty((len(models), dep_int.size))
+            vpvs = ModelMatrix._delete_nanmodels(vpvs)
+            for i, (model, ivpvs) in enumerate(zip(models, vpvs)):
+                # for vs, dep 2D histogram
+                vpvs_int = Model.get_interpmodel(model, dep_int, vpvs=ivpvs)
+                vpvss_int[i] = vpvs_int
+            return vpvss_int, deps_int
+        
         for i, model in enumerate(models):
             # for vs, dep 2D histogram
             _, vs_int = Model.get_interpmodel(model, dep_int)
@@ -157,7 +171,7 @@ class ModelMatrix(object):
         return vss_int, deps_int
 
     @staticmethod
-    def get_singlemodels(models, dep_int=None, misfits=None):
+    def get_singlemodels(models, dep_int=None, misfits=None, vpvs=None):
         """Return specific single models from model matrix (vs, depth).
         The model is a step model for plotting.
 
@@ -180,34 +194,32 @@ class ModelMatrix(object):
             # interpolate depth to 0.5 km bins.
             dep_int = np.linspace(0, 100, 201)
 
-        vss_int, deps_int = ModelMatrix.get_interpmodels(models, dep_int)
+        vss_int, deps_int = ModelMatrix.get_interpmodels(models, dep_int, vpvs)
 
         # (1) mean, (2) median
         mean = np.mean(vss_int, axis=0)
         median = np.median(vss_int, axis=0)
-
         # (3) minmax
         minmax = np.array((np.min(vss_int, axis=0), np.max(vss_int, axis=0))).T
-
         # (4) stdminmax
         stdmodel = np.std(vss_int, axis=0)
         stdminmodel = mean - stdmodel
         stdmaxmodel = mean + stdmodel
-
+        
         stdminmax = np.array((stdminmodel, stdmaxmodel)).T
-
         # (5) mode from histogram
         vss_flatten = vss_int.flatten()
         vsbins = int((vss_flatten.max() - vss_flatten.min()) / 0.025)
         # in PlotFromStorage posterior_models2d
-        data = np.histogram2d(vss_int.flatten(), deps_int.flatten(),
+        # data = np.histogram2d(vss_int.flatten(), deps_int.flatten(),
+        #                       bins=(vsbins, dep_int))
+        # bins, vs_bin, dep_bin = np.array(data).T
+        bins, vs_bin, dep_bin = np.histogram2d(vss_int.flatten(), deps_int.flatten(),
                               bins=(vsbins, dep_int))
-        bins, vs_bin, dep_bin = np.array(data).T
         vs_center = (vs_bin[:-1] + vs_bin[1:]) / 2.
         dep_center = (dep_bin[:-1] + dep_bin[1:]) / 2.
         vs_mode = vs_center[np.argmax(bins.T, axis=1)]
         mode = (vs_mode, dep_center)
-
         # (6) bestmisfit - min misfit
         if misfits is not None:
             ind = np.argmin(misfits)
@@ -234,7 +246,7 @@ class ModelMatrix(object):
         Basically just repeats values, as given by weights.
         """
         weights = np.array(weights, dtype=int)
-        wlikes, wmisfits, wmodels, wnoise, wvpvs, wani = (None, None, None, None, None, None)
+        wlikes, wmisfits, wmodels, wnoise, wvpvs, wanis = (None, None, None, None, None, None)
 
         if likes is not None:
             wlikes = np.repeat(likes, weights)
@@ -279,12 +291,12 @@ class ModelMatrix(object):
                     n += 1
         
         if anis is not None:
-            wanis = np.ones((np.sum(weights), 3, anis[0][0].size)) * np.nan
+            wani = np.ones((np.sum(weights), 3, anis[0][0].size)) * np.nan
 
             n = 0
             for i, ani in enumerate(anis):
                 for rep in range(weights[i]):
-                    wanis[n] = ani
+                    wani[n] = ani
                     n += 1
 
         return wmodels, wlikes, wmisfits, wnoise, wvpvs, wani

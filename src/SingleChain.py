@@ -131,7 +131,12 @@ class SingleChain(object):
             vsmin = np.max(temp_fix_vel)
             zmin = self.fixzmax
 
-        vs = self.rstate.uniform(low=vsmin, high=vsmax, size=layers)
+        if 'vspri' in self.priors and self.priors['vspri']!=None:
+            vspri = self.priors['vspri']
+            vs = np.asarray([self.rstate.uniform(low=np.max(vspri*0.8 ,vsmin), high=np.min(vspri*1.2, vsmax), size=1) 
+                             for i in range(len(layers))])
+        else:
+            vs = self.rstate.uniform(low=vsmin, high=vsmax, size=layers)
         vs.sort()
 
         if (self.priors['mohoest'] is not None and layers > 1):
@@ -148,7 +153,12 @@ class SingleChain(object):
                     self.rstate.uniform(low=zmin, high=zmax, size=(layers - 2))))
 
         else:  # no moho estimate
-            z_vnoi = self.rstate.uniform(low=zmin, high=zmax, size=layers)
+            if 'zpri' in self.priors and self.priors['zpri']!=None:
+                zpri = self.priors['zpri']
+                z_vnoi = np.asarray([self.rstate.uniform(low=np.max(zpri*0.8 ,zmin), high=np.min(zpri*1.2, zmax), size=1) 
+                                 for i in range(len(layers))])
+            else:
+                z_vnoi = self.rstate.uniform(low=zmin, high=zmax, size=layers)
 
         z_vnoi.sort()
         if (self.priors['fixed'] is not None):
@@ -893,6 +903,8 @@ exponential law. Explicitly state a noise reference for your user target \
                                      self.p1misfits, self.p1noise,
                                      self.p1vpvs, self.p1ani]):
                 outfile = op.join(savepath, 'c%.3d_p1%s' % (self.chainidx, names[i]))
+                if data is None or (isinstance(data, np.ndarray) and data.size == 0):
+                    continue
                 np.save(outfile, data[::self.thinning])
         except:
             logger.info('No burnin models accepted.')
@@ -903,6 +915,8 @@ exponential law. Explicitly state a noise reference for your user target \
                                      self.p2misfits, self.p2noise,
                                      self.p2vpvs, self.p2ani]):
                 outfile = op.join(savepath, 'c%.3d_p2%s' % (self.chainidx, names[i]))
+                if data is None or (isinstance(data, np.ndarray) and data.size == 0):
+                    continue
                 np.save(outfile, data[::self.thinning])
 
             logger.info('> Saving %d models (main phase).' % len(data[::self.thinning]))
