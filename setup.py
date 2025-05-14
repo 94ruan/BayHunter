@@ -32,6 +32,28 @@ extensions.extend(cythonize(
         "src/extensions/rfmini/fork.cpp"],
         include_dirs=[numpy.get_include()])))
 
+# sources = [
+#     "src/extensions/raysum_src/eispack-cg.f",
+#     "src/extensions/raysum_src/matrixops.f",
+#     "src/extensions/raysum_src/eigenvec.f",
+#     "src/extensions/raysum_src/raysum.f",
+#     "src/extensions/raysum_src/readwrite.f",
+#     # "src/extensions/raysum_src/params.h"
+#     "src/extensions/raysum_src/phaselist.f",
+#     "src/extensions/raysum_src/buildmodel.f",
+#     "src/extensions/raysum_src/trace.f",
+#     # "src/extensions/raysum_src/misfit.f",
+#     "src/extensions/raysum_src/seis-spread.f"
+# ]
+
+# extensions.extend(
+#     NumpyExtension(
+#         name="BayHunter.raysum_ext",
+#         sources=sources,
+#         extra_f77_compile_args=["-Wall", "-O3", "-g"],
+#         f2py_options=["only:", "mcmcraysum", ":"],
+#         language="f77"),
+# )
 
 setup(
     name="BayHunter",

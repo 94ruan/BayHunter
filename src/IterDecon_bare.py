@@ -1,21 +1,102 @@
 import numpy as np
 from scipy.fft import fft,ifft
-import numba 
+# import numba 
 from numba import jit
 import obspy as ob
 import os
+
+# @jit(nopython=True) 
+# def iterdecon(traces, baz, nfft, gaussF, odina_flag,
+#               tshift=1, itmax=200, minderr=0.01, use_bic=True, 
+#               dt_bare=None):
+#     forward_list = np.zeros((len(baz), 2, nfft), dtype=float)
+#     # gaussF_nor = fft(ifft(gaussF).real / np.max(np.abs(ifft(gaussF).real)) * 1)
+#     for tr in range(len(baz)):
+#         stream = traces[tr, :, :nfft]
+#         # global_max = np.max(np.abs(stream))  # 取绝对值的最大值
+#         # stream = stream / global_max
+#         RF_output = np.empty((2, nfft))
+#         half = nfft // 2
+#         W0 = np.zeros(nfft)
+#         if odina_flag==2:
+#             W0[:nfft] = stream[0, :]
+#             _transverse = [1, 2]
+#         elif odina_flag==1:
+#             W0[:nfft] = stream[2, :]
+#             _transverse = [0, 1]
+        
+#         W0f = fft(W0)
+#         Wf = W0f * gaussF * dt_bare
+#         W = ifft(Wf).real
+#         powerW = np.sum(W**2)
+        
+#         for index, chan in enumerate(_transverse):
+#             # Resize and rename the numerator and denominator
+#             U0 = np.zeros(nfft)
+#             U0[:nfft] =  stream[chan]
+#             U = ifft(fft(U0) * gaussF * dt_bare).real
+#             powerU = np.sum(U**2)
+    
+#             RFS = []
+#             Bic = np.zeros(1)
+#             SSE = np.zeros(itmax)
+#             R = U
+#             P0 = np.zeros(nfft)
+#             sumsq_i = 1
+#             d_error = 100*powerU+minderr
+#             for it in range(itmax):
+#                 if it==0 and abs(d_error)==minderr:
+#                     RFS.append(P0)
+#                     final_index = 0
+#                     break
+#                 elif abs(d_error)>minderr:
+#                     a = ifft(fft(R)*np.conj(Wf)).real/powerW
+#                     index_k = np.argmax(np.abs(a[:half]))
+#                     amp = a[index_k] / dt_bare
+#                     # compute predicted deconvolution
+#                     P0[index_k] = P0[index_k]+amp
+#                     RFS.append(P0)
+#                     P = ifft(fft(P0) * gaussF * W0f * dt_bare * dt_bare).real
+#                     # compute residual with filtered numerator
+#                     R = U-P
+#                     powerR = np.sum(R**2)
+#                     sumsq = powerR/powerU
+#                     if len(Bic==1):
+#                         Bic[0] = np.log(nfft)*np.count_nonzero(P0)*2+nfft*np.log(float(powerR/nfft))
+#                     else:
+#                         Bic = np.append(Bic, np.log(nfft)*np.count_nonzero(P0)*2+nfft*np.log(float(powerR/nfft)))
+#                     SSE[it] = sumsq # scaled error
+#                     d_error = 100*(sumsq_i-sumsq) #change in error
+#                     sumsq_i = sumsq
+#                 else: break
+            
+#             # Select final receiver function
+#             if use_bic:
+#                 if len(Bic)!=0: final_index = np.argmin(Bic[::-1])
+#                 rf = ifft(fft(RFS[-final_index-1])*gaussF).real
+#                 # rf = ifft(fft(RFS[-final_index-1])*gaussF_nor).real
+#             else :
+#                 rf = ifft(fft(RFS[-1])*gaussF).real
+#                 # rf = ifft(fft(RFS[-1])*gaussF_nor).real
+#             # Phase shift
+#             shift_i = round(tshift/dt_bare)
+#             p = np.multiply(2*np.pi*np.arange(nfft),np.divide(shift_i,nfft))
+#             rf = ifft(np.multiply(fft(rf),(np.cos(p)-(1j)*np.sin(p)))).real/np.cos(2*np.pi*shift_i/nfft)
+#             RF_output[index, :] = rf[:nfft]
+#         forward_list[tr, :, :] = RF_output
+#     return forward_list
 
 @jit(nopython=True) 
 def iterdecon(traces, baz, nfft, gaussF, odina_flag,
               tshift=1, itmax=200, minderr=0.01, use_bic=True, 
               dt_bare=None):
     forward_list = np.zeros((len(baz), 2, nfft), dtype=float)
-    gaussF_nor = fft(ifft(gaussF).real / np.max(np.abs(ifft(gaussF).real)))
+    gaussF_nor = fft(ifft(gaussF).real / np.max(np.abs(ifft(gaussF).real)) * 1)
     for tr in range(len(baz)):
         stream = traces[tr, :, :nfft]
+        # global_max = np.max(np.abs(stream))  # 取绝对值的最大值
+        # stream = stream / global_max
         RF_output = np.empty((2, nfft))
-        # SSE_output = []
-        # Bic_output = []
         half = nfft // 2
         W0 = np.zeros(nfft)
         if odina_flag==2:
@@ -38,7 +119,6 @@ def iterdecon(traces, baz, nfft, gaussF, odina_flag,
             powerU = np.sum(U**2)
     
             RFS = []
-            # Bic = []
             Bic = np.zeros(1)
             SSE = np.zeros(itmax)
             R = U
@@ -66,7 +146,6 @@ def iterdecon(traces, baz, nfft, gaussF, odina_flag,
                         Bic[0] = np.log(nfft)*np.count_nonzero(P0)*2+nfft*np.log(float(powerR/nfft))
                     else:
                         Bic = np.append(Bic, np.log(nfft)*np.count_nonzero(P0)*2+nfft*np.log(float(powerR/nfft)))
-                    # Bic.append(np.log(nt_bare)*np.count_nonzero(P0)+nt_bare*np.log(float(powerR/nt_bare)))
                     SSE[it] = sumsq # scaled error
                     d_error = 100*(sumsq_i-sumsq) #change in error
                     sumsq_i = sumsq
@@ -74,8 +153,6 @@ def iterdecon(traces, baz, nfft, gaussF, odina_flag,
             
             # Select final receiver function
             if use_bic:
-                # if len(Bic)!=0: final_index = np.argmin(Bic)
-                # rf = ifft(fft(RFS[final_index])*gaussF).real
                 if len(Bic)!=0: final_index = np.argmin(Bic[::-1])
                 # rf = ifft(fft(RFS[-final_index-1])*gaussF).real
                 rf = ifft(fft(RFS[-final_index-1])*gaussF_nor).real
@@ -83,28 +160,25 @@ def iterdecon(traces, baz, nfft, gaussF, odina_flag,
                 # rf = ifft(fft(RFS[-1])*gaussF).real
                 rf = ifft(fft(RFS[-1])*gaussF_nor).real
             # Phase shift
-            # rf = phaseshift(rf, nfft, dt_bare, tshift)
             shift_i = round(tshift/dt_bare)
             p = np.multiply(2*np.pi*np.arange(nfft),np.divide(shift_i,nfft))
             rf = ifft(np.multiply(fft(rf),(np.cos(p)-(1j)*np.sin(p)))).real/np.cos(2*np.pi*shift_i/nfft)
             RF_output[index, :] = rf[:nfft]
-            # SSE_output.append(SSE)
-            # Bic_output.append(Bic)
         forward_list[tr, :, :] = RF_output
     return forward_list
-    # return [RF_output, SSE_output, Bic_output]
-    # nume = [(np.sum(weight*sum_RRF[tr]*forward_list[tr][0])+\
-    #          np.sum((1-weight)*sum_TRF[tr]*forward_list[tr][1]))
-    #         for tr in baz_list]
-    # deno_1 = [np.sum(weight*(sum_RRF[tr])**2)+ \
-    #           np.sum((1-weight)*(sum_TRF[tr])**2)
-    #           for tr in baz_list]   
-    # deno_2 = [np.sum(weight*(forward_list[tr][0])**2)+ \
-    #           np.sum((1-weight)*(forward_list[tr][1])**2)
-    #           for tr in baz_list]
-    # misfit = 1 - sum(nume)/(np.sqrt(sum(deno_1)*sum(deno_2)))
-    # return misfit
 
+
+
+def normal(st):
+    trace1 = ob.Trace(data=st[0])
+    trace2 = ob.Trace(data=st[1])
+    trace3 = ob.Trace(data=st[2])
+    stream = ob.Stream(traces=[trace1, trace2, trace3])
+    stream.normalize(global_max=True)
+    for i, tr in enumerate(st):
+        st[i] = stream[i].data
+    return st
+    
 def gauss_filter(dt, f0, nfft):
     nfft_r = int(nfft/2)
     w = 2*np.pi*(np.arange(nfft_r)*(1.0/(nfft*dt)))

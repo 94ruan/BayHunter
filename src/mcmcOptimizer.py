@@ -10,7 +10,7 @@ import os
 import time
 import os.path as op
 import numpy as np
-
+import copy
 
 import matplotlib.pyplot as plt
 import multiprocessing as mp

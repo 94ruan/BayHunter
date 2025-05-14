@@ -318,8 +318,8 @@ class PlotFromStorage(object):
                         noise[i], color='red', lw=0.5, alpha=0.7)
 
             if mtype == 'vpvs':
-                vpvs = self.refmodel[mtype]
-                fig.axes[0].axvline(vpvs, color='red', lw=0.5, alpha=0.7)
+                dep, vpvs = self.refmodel['vpvs']
+                fig.axes[0].plot(vpvs, dep, **kwargs)
         return fig
 
 # Plot values per iteration.
@@ -444,7 +444,7 @@ class PlotFromStorage(object):
 # Considering weighted models.
 
     @staticmethod
-    def _plot_bestmodels(bestmodels, dep_int=None, vpvs=None):
+    def _plot_bestmodels(bestmodels, dep_int=None, opt=None):
         fig, ax = plt.subplots(figsize=(4.4, 7))
 
         models = ['mean', 'median', 'stdminmax']
@@ -452,7 +452,7 @@ class PlotFromStorage(object):
         ls = ['-', '--', ':']
         lw = [1, 1, 1]
 
-        singlemodels = ModelMatrix.get_singlemodels(bestmodels, dep_int, vpvs=vpvs)
+        singlemodels = ModelMatrix.get_singlemodels(bestmodels, dep_int, opt=opt)
         
         for i, model in enumerate(models):
             vs, dep = singlemodels[model]
@@ -462,7 +462,10 @@ class PlotFromStorage(object):
 
         ax.invert_yaxis()
         ax.set_ylabel('Depth in km')
-        ax.set_xlabel('$V_S$ in km/s')
+        if opt is not None:
+            ax.set_xlabel('$V_P$$V_S$ in km/s')
+        else:
+            ax.set_xlabel('$V_S$ in km/s')
 
         han, lab = ax.get_legend_handles_labels()
         ax.legend(han[:-1], lab[:-1], loc=3)
@@ -640,9 +643,55 @@ class PlotFromStorage(object):
         ax.set_xlabel('Number of layers')
         return ax.figure
 
+    @staticmethod
+    def _plot_bestanis(bestmodels, dep_int=None, ani=None):
+        fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(4.4, 21))
+
+        models = ['mean', 'median', 'stdminmax']
+        colors = ['green', 'blue', 'black']
+        ls = ['-', '--', ':']
+        lw = [1, 1, 1]
+        anipara = ['ani_strength', 'trend', 'plunge']
+        aniunit = ['%', '°', '°']
+        for row in range(3):  # 改用不同的变量名
+            ani_part = ani[:, row, :]
+            singlemodels = ModelMatrix.get_singlemodels(bestmodels, dep_int, opt=ani_part)
+
+            for i, model in enumerate(models):  # 内层循环保持i不变
+                vs, dep = singlemodels[model]
+                axs[row].plot(vs.T, dep, color=colors[i], label=model,
+                        ls=ls[i], lw=lw[i])
+
+            axs[row].invert_yaxis()
+            axs[row].set_ylabel('Depth in km')
+            axs[row].set_xlabel(f'{anipara[row]} in {aniunit[row]}')
+
+            han, lab = axs[row].get_legend_handles_labels()
+            axs[row].legend(han[:-1], lab[:-1], loc=3)
+        return fig, axs
+    
+    # @tryexcept
+    def plot_posterior_ani(self, final=True, chainidx=0, depint=1):
+        ani, = self._get_posterior_data(['ani'], final, chainidx)
+        models, = self._get_posterior_data(['models'], final, chainidx)
+        if final:
+            nchains = self.initparams['nchains'] - self.outliers.size
+        else:
+            nchains = 1
+
+        dep_int = np.arange(self.priors['z'][0],
+                            self.priors['z'][1] + depint, depint)
+        fig, axs = self._plot_bestanis(models, dep_int, ani=ani) #Need Modify
+        for ax in axs:
+            ax.set_ylim(self.priors['z'][::-1])
+            ax.grid(color='gray', alpha=0.6, ls=':', lw=0.5)
+            ax.set_title('%d ani from %d chains' % (len(ani), nchains))
+        return fig
+
     @tryexcept
     def plot_posterior_vpvs(self, final=True, chainidx=0, depint=1):
         vpvs, = self._get_posterior_data(['vpvs'], final, chainidx)
+
         if vpvs.ndim == 2:
             models, = self._get_posterior_data(['models'], final, chainidx)
             if final:
@@ -652,7 +701,7 @@ class PlotFromStorage(object):
 
             dep_int = np.arange(self.priors['z'][0],
                                 self.priors['z'][1] + depint, depint)
-            fig, ax = self._plot_bestmodels(models, dep_int, vpvs=vpvs) #Need Modify
+            fig, ax = self._plot_bestmodels(models, dep_int, opt=vpvs) #Need Modify
             ax.set_ylim(self.priors['z'][::-1])
             ax.grid(color='gray', alpha=0.6, ls=':', lw=0.5)
             ax.set_title('%d vpvs from %d chains' % (len(vpvs), nchains))
@@ -952,7 +1001,7 @@ class PlotFromStorage(object):
             vpvs = np.load(modfile.replace('models', 'vpvs'))
             currentvpvs = vpvs[-1]
             currentmodel = models[-1]
-            # print(currentmodel)
+
             color = color_list[i]
             vp, vs, h = Model.get_vp_vs_h(currentmodel, currentvpvs, self.mantle)
             cvp, cvs, cdepth = Model.get_stepmodel_from_h(h=h, vs=vs, vp=vp)
@@ -996,8 +1045,8 @@ class PlotFromStorage(object):
                 xmod, ymod = target.moddata.plugin.run_model(
                     h=h, vp=vp, vs=vs, rho=rho)
                 if ymod.ndim != 1:
-                    ymod = np.average(ymod, axis=0)[:len(target.obsdata.x)]
-                yobs = np.average(target.obsdata.y, axis=0)[:len(target.obsdata.x)] if target.obsdata.y.ndim != 1 else target.obsdata.y
+                    ymod = np.average(ymod, axis=0, weights=target.traceweight)[:len(target.obsdata.x)]
+                yobs = np.average(target.obsdata.y, axis=0, weights=target.traceweight)[:len(target.obsdata.x)] if target.obsdata.y.ndim != 1 else target.obsdata.y
                 misfit = target.valuation.get_rms(yobs, ymod)
                 jmisfit += misfit
 
@@ -1183,10 +1232,10 @@ class PlotFromStorage(object):
         return fig
 
     def merge_pdfs(self):
-        from PyPDF2 import PdfFileReader, PdfFileWriter
+        from PyPDF2 import PdfReader, PdfWriter
 
         outputfile = op.join(self.figpath, 'c_summary.pdf')
-        output = PdfFileWriter()
+        output = PdfWriter()
         pdffiles = glob.glob(op.join(self.figpath + os.sep + 'c_*.pdf'))
         pdffiles.sort(key=op.getmtime)
 
@@ -1194,9 +1243,9 @@ class PlotFromStorage(object):
             if pdffile == outputfile:
                 continue
 
-            document = PdfFileReader(open(pdffile, 'rb'))
-            for i in range(document.getNumPages()):
-                output.addPage(document.getPage(i))
+            document = PdfReader(open(pdffile, 'rb'))
+            for i in range(len(document.pages)):
+                output.add_page(document.pages[i])
 
         with open(outputfile, "wb") as f:
             output.write(f)
@@ -1283,9 +1332,9 @@ class PlotFromStorage(object):
         self.savefig(fig3b, 'c_currentdatafits.pdf')
 
         # plot final posterior distributions
-        fig2b = self.plot_posterior_nlayers()
-        self.plot_refmodel(fig2b, 'nlays')
-        self.savefig(fig2b, 'c_posterior_nlayers.pdf')
+        fig2a = self.plot_posterior_nlayers()
+        self.plot_refmodel(fig2a, 'nlays')
+        self.savefig(fig2a, 'c_posterior_nlayers.pdf')
 
         fig2b = self.plot_posterior_vpvs()
         self.plot_refmodel(fig2b, 'vpvs')
@@ -1301,3 +1350,6 @@ class PlotFromStorage(object):
         fig2e = self.plot_posterior_models2d(depint=depint)
         self.plot_refmodel(fig2e, 'model', color='red', lw=0.5, alpha=0.7)
         self.savefig(fig2e, 'c_posterior_models2d.pdf')
+
+        fig2f = self.plot_posterior_ani()
+        self.savefig(fig2f, 'c_posterior_anis.pdf')

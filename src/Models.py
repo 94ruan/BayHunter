@@ -92,18 +92,18 @@ class Model(object):
         return vp_step, vs_step, dep_step
 
     @staticmethod
-    def get_interpmodel(model, dep_int, vpvs=1.73, mantle=None):
+    def get_interpmodel(model, dep_int, vpvs=1.73, mantle=None, opt=None):
         """
         Return an interpolated stepmodel, for (histogram) plotting.
 
         Model is a vector of the parameters.
         """
         vp_step, vs_step, dep_step = Model.get_stepmodel(model, vpvs, mantle)
-        if isinstance(vpvs, np.ndarray):
-            vpvs = vpvs[~np.isnan(vpvs)]
-            vpvs_step = np.concatenate([(vps, vps) for vps in vpvs])
-            vpvs_int = np.interp(dep_int, dep_step, vpvs_step)
-            return vpvs_int
+        if opt is not None:
+            opt = opt[~np.isnan(opt)]
+            opt_step = np.concatenate([(vps, vps) for vps in opt])
+            opt_int = np.interp(dep_int, dep_step, opt_step)
+            return opt_int
         vs_int = np.interp(dep_int, dep_step, vs_step)
         vp_int = np.interp(dep_int, dep_step, vp_step)
 
@@ -145,7 +145,7 @@ class ModelMatrix(object):
         return models
 
     @staticmethod
-    def get_interpmodels(models, dep_int, vpvs=None):
+    def get_interpmodels(models, dep_int, opt=None):
         """Return model matrix with interpolated stepmodels.
 
         Each model in the matrix is parametrized with (vs, z_vnoi)."""
@@ -154,14 +154,14 @@ class ModelMatrix(object):
         deps_int = np.repeat([dep_int], len(models), axis=0)
         vss_int = np.empty((len(models), dep_int.size))
 
-        if vpvs is not None:
-            vpvss_int = np.empty((len(models), dep_int.size))
-            vpvs = ModelMatrix._delete_nanmodels(vpvs)
-            for i, (model, ivpvs) in enumerate(zip(models, vpvs)):
+        if opt is not None:
+            opts_int = np.empty((len(models), dep_int.size))
+            opt = ModelMatrix._delete_nanmodels(opt)
+            for i, (model, iopt) in enumerate(zip(models, opt)):
                 # for vs, dep 2D histogram
-                vpvs_int = Model.get_interpmodel(model, dep_int, vpvs=ivpvs)
-                vpvss_int[i] = vpvs_int
-            return vpvss_int, deps_int
+                opt_int = Model.get_interpmodel(model, dep_int, opt=iopt)
+                opts_int[i] = opt_int
+            return opts_int, deps_int
         
         for i, model in enumerate(models):
             # for vs, dep 2D histogram
@@ -170,8 +170,9 @@ class ModelMatrix(object):
 
         return vss_int, deps_int
 
+    
     @staticmethod
-    def get_singlemodels(models, dep_int=None, misfits=None, vpvs=None):
+    def get_singlemodels(models, dep_int=None, misfits=None, opt=None):
         """Return specific single models from model matrix (vs, depth).
         The model is a step model for plotting.
 
@@ -194,8 +195,8 @@ class ModelMatrix(object):
             # interpolate depth to 0.5 km bins.
             dep_int = np.linspace(0, 100, 201)
 
-        vss_int, deps_int = ModelMatrix.get_interpmodels(models, dep_int, vpvs)
-
+        vss_int, deps_int = ModelMatrix.get_interpmodels(models, dep_int, opt)
+        
         # (1) mean, (2) median
         mean = np.mean(vss_int, axis=0)
         median = np.median(vss_int, axis=0)
@@ -209,7 +210,10 @@ class ModelMatrix(object):
         stdminmax = np.array((stdminmodel, stdmaxmodel)).T
         # (5) mode from histogram
         vss_flatten = vss_int.flatten()
-        vsbins = int((vss_flatten.max() - vss_flatten.min()) / 0.025)
+        if opt is not None:
+            vsbins = 1
+        else:
+            vsbins = int((vss_flatten.max() - vss_flatten.min()) / 0.025)
         # in PlotFromStorage posterior_models2d
         # data = np.histogram2d(vss_int.flatten(), deps_int.flatten(),
         #                       bins=(vsbins, dep_int))

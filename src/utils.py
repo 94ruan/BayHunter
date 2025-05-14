@@ -13,6 +13,10 @@ import os.path as op
 from configobj import ConfigObj
 import matplotlib.pyplot as plt
 from scipy.optimize import least_squares
+import random
+import os
+import obspy
+from obspy import Stream
 
 rstate = np.random.RandomState(333)
 
@@ -393,3 +397,196 @@ def rrf_estimate(pars=dict()):
         print('%.3f\t%.3f' % (env_a, rrf))
 
     return rrfs, a_est
+
+import numpy as np
+import random
+
+import numpy as np
+import random
+
+def calculate_layer_boundaries(z_disc, z_vnoi_pre=None, b=None):
+    """
+    Convert disc elevations (z_disc) to layer boundaries (z_vnoi) with:
+    z_disc[i] = (z_vnoi[i] + z_vnoi[i+1]) / 2
+
+    Parameters:
+        z_disc (np.array): Strictly increasing array of disc elevations (>0).
+        z_vnoi_pre (np.array, optional): Predefined initial z_vnoi values. 
+                                        If provided, the last element of z_vnoi_pre 
+                                        becomes the first element of z_vnoi.
+        b (float, optional): Free parameter for first boundary (only used if z_vnoi_pre=None).
+                            Must satisfy 0 < b < z_disc[0] if provided.
+    
+    Returns:
+        np.array: z_vnoi array where all elements are positive and satisfy the averaging relationship.
+    
+    Raises:
+        ValueError: If input constraints are violated.
+    """
+    # Input validation for z_disc
+    if not (np.all(np.diff(z_disc) > 0) and np.all(z_disc > 0)):
+        raise ValueError("z_disc must be strictly increasing and positive")
+    
+    n_total = len(z_disc) + 1
+    z_vnoi = np.zeros(n_total)
+
+    if z_vnoi_pre is not None:
+        # ===== 模式1：从 z_vnoi_pre 接续 =====
+        if len(z_vnoi_pre) == 0:
+            raise ValueError("z_vnoi_pre cannot be empty")
+        if not np.all(z_vnoi_pre > 0):
+            raise ValueError("All elements in z_vnoi_pre must be positive")
+        
+        # 将 z_vnoi_pre 的最后一个元素作为 z_vnoi 的第一个元素
+        z_vnoi[0] = z_vnoi_pre[-1]
+        
+        # 计算剩余边界
+        for i in range(n_total - 1):
+            if i < len(z_disc):
+                z_vnoi[i + 1] = 2 * z_disc[i] - z_vnoi[i]
+                if z_vnoi[i + 1] <= 0:
+                    raise ValueError(f"Generated z_vnoi[{i + 1}] = {z_vnoi[i + 1]} ≤ 0. Adjust z_vnoi_pre or z_disc.")
+    else:
+        # ===== 模式2：自由参数 b =====
+        if b is None:
+            b = random.uniform(0.01 * z_disc[0], 0.99 * z_disc[0])  # 避免边界值
+        elif not (0 < b < z_disc[0]):
+            raise ValueError(f"b must satisfy: 0 < b < {z_disc[0]}")
+        
+        z_vnoi[0] = b
+        for i in range(n_total - 1):
+            z_vnoi[i + 1] = 2 * z_disc[i] - z_vnoi[i]
+            if z_vnoi[i + 1] <= 0:
+                raise ValueError(f"Generated z_vnoi[{i + 1}] = {z_vnoi[i + 1]} ≤ 0. Adjust b or z_disc.")
+    
+    return z_vnoi
+
+def stack_rf(sum_RRF, sum_TRF):
+    '''
+    RRF = input sum Stream of rf radial component
+    TRF = input sum Stream of rf transverse component
+    '''
+    
+    # Determine minimum length across all RFs
+    n_traces = 73
+    rf_end = min(len(rf.data) for rf in sum_RRF)
+    
+    # Initialize arrays
+    st_RRF = np.zeros((n_traces, rf_end))
+    st_TRF = np.zeros((n_traces, rf_end))
+    counts = np.zeros(n_traces)
+    
+    # Stack RFs into appropriate bins
+    for rrf, trf in zip(sum_RRF, sum_TRF):
+        baz = rrf.stats.sac['baz']
+        
+        # Assign to 5-degree bin (0-360° → 0-72 bins)
+        trace = int(round(baz / 5)) % n_traces
+        
+        st_RRF[trace, :] += rrf.data[:rf_end]
+        st_TRF[trace, :] += trf.data[:rf_end]
+        counts[trace] += 1
+    # Compute averages (avoid division by zero)
+    valid_traces = counts > 0
+    st_RRF[valid_traces, :] /= counts[valid_traces, None]
+    st_TRF[valid_traces, :] /= counts[valid_traces, None]
+            
+    # Combine 0° and 360° (bin 0 and bin 72)
+    st_RRF[0, :] = st_RRF[-1, :] = (st_RRF[0, :] + st_RRF[-1, :]) / max(counts[0] + counts[-1], 1)
+    st_TRF[0, :] = st_TRF[-1, :] = (st_TRF[0, :] + st_TRF[-1, :]) / max(counts[0] + counts[-1], 1)
+    
+    # Combine RRF and TRF
+    stacked_data = np.concatenate((st_RRF, st_TRF), axis=1)
+
+    # Create 0/1 mask
+    mask = np.where(counts > 0, 1, 0)
+
+    return stacked_data, mask, counts
+
+def read_paired_q_t_streams(sac_dir, target_delta=0.1, end_time=6.0, max_amplitude=1.0):
+    """
+    读取配对的Q和T分量SAC文件，降采样并截断到指定时间，剔除振幅过大的波形对。
+
+    参数:
+        sac_dir (str): SAC文件目录路径。
+        target_delta (float): 目标采样间隔（秒），必须为原始delta的整数倍。
+        end_time (float): 截断时间（秒），如6.0表示只返回6秒前的数据。
+        max_amplitude (float): 允许的最大振幅绝对值，超过此值的波形对将被剔除。
+
+    返回:
+        tuple: (q_stream, t_stream, x_axis)
+            - q_stream: 降采样并截断后的Q分量Stream
+            - t_stream: 降采样并截断后的T分量Stream
+            - x_axis: 截断后的时间轴（从b开始到end_time）
+    """
+    # 读取原始数据并降采样
+    q_stream, t_stream, x_axis_full = read_paired_q_t_streams_raw(sac_dir, target_delta)
+    
+    # 获取第一个Trace的起始时间b
+    b = q_stream[0].stats.sac.get('b', -1.0)
+    
+    # 计算截断的样本数
+    npts_truncate = int((end_time - b) / target_delta) + 1
+    
+    # 截断时间轴
+    x_axis = x_axis_full[:npts_truncate]
+    
+    # 创建新的Stream对象用于存储有效数据
+    valid_q_stream = Stream()
+    valid_t_stream = Stream()
+    
+    # 检查每个波形对
+    for q_trace, t_trace in zip(q_stream, t_stream):
+        # 检查Q和T分量是否都未超过最大振幅
+        q_max = np.max(np.abs(q_trace.data[:npts_truncate]))
+        t_max = np.max(np.abs(t_trace.data[:npts_truncate]))
+        
+        if q_max <= max_amplitude and t_max <= max_amplitude:
+            # 创建新的Trace对象，避免修改原始数据
+            new_q_trace = q_trace.copy()
+            new_t_trace = t_trace.copy()
+            
+            # 截断数据
+            new_q_trace.data = new_q_trace.data[:npts_truncate]
+            new_t_trace.data = new_t_trace.data[:npts_truncate]
+            
+            # 添加到有效流中
+            valid_q_stream.append(new_q_trace)
+            valid_t_stream.append(new_t_trace)
+    
+    return valid_q_stream, valid_t_stream, x_axis
+
+def read_paired_q_t_streams_raw(sac_dir, target_delta):
+    """（原函数逻辑，用于内部调用）"""
+    all_files = os.listdir(sac_dir)
+    prefixes = set()
+    for f in all_files:
+        if f.endswith(".Q.SAC") or f.endswith(".T.SAC"):
+            prefix = f.rsplit(".", 2)[0]
+            prefixes.add(prefix)
+    
+    q_stream = Stream()
+    t_stream = Stream()
+    
+    for prefix in sorted(prefixes):
+        q_file = os.path.join(sac_dir, f"{prefix}.Q.SAC")
+        t_file = os.path.join(sac_dir, f"{prefix}.T.SAC")
+        
+        if os.path.exists(q_file):
+            q_stream += obspy.read(q_file)
+        if os.path.exists(t_file):
+            t_stream += obspy.read(t_file)
+    
+    # 降采样
+    first_trace = q_stream[0]
+    original_delta = first_trace.stats.delta
+    decimation_factor = int(round(target_delta / original_delta))
+    q_stream.decimate(decimation_factor, no_filter=True)
+    t_stream.decimate(decimation_factor, no_filter=True)
+    
+    # 生成完整时间轴
+    b = first_trace.stats.sac.get('b', -1.0)
+    npts = len(q_stream[0].data)
+    x_axis_full = b + np.arange(npts) * target_delta
+    
+    return q_stream, t_stream, x_axis_full
