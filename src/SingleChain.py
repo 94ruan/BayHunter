@@ -629,22 +629,27 @@ exponential law. Explicitly state a noise reference for your user target \
         return True
 
     def _ani_vpvs_layerbirth(self, ind, z_ani_flag):
-        if self.ani_flag:
-            ani = copy.copy(self.currentani)
-            if z_ani_flag:
-                ani_before = ani[:, ind]
-                ani_birth = (ani_before + np.array([self.rstate.normal(0, self.propdist[5]), 
-                                                    int(round(self.rstate.normal(0, self.propdist[6]))), 
-                                                    int(round(self.rstate.normal(0, self.propdist[6])))])).reshape((3, 1))
-            else:
-                ani_birth = np.zeros((3, 1))
-            self.tempani = np.concatenate((ani, ani_birth), axis=1)
+        while True:
+            valid_list = []
+            if self.ani_flag:
+                ani = copy.copy(self.currentani)
+                if z_ani_flag:
+                    rand_nums = self.rstate.normal(0, [self.propdist[5], self.propdist[6], self.propdist[6]])
+                    ani_birth = (ani[:, ind] + np.array([rand_nums[0], 
+                                                        int(round(rand_nums[1])), 
+                                                        int(round(rand_nums[2]))])).reshape((3, 1))
+                else:
+                    ani_birth = np.zeros((3, 1))
+                self.tempani = np.concatenate((ani, ani_birth), axis=1)
+                valid_list.append([self._validani(self.tempani, ind_row=i, ind_col=ind) for i in range(3)])
 
-        vpvs = copy.copy(self.currentvpvs)
-        vpvs_before = vpvs[ind]
-        vpvs_birth = vpvs_before + self.rstate.normal(0, self.propdist[4])
-        self.tempvpvs = np.concatenate((vpvs, [vpvs_birth]))
-        return
+            vpvs = copy.copy(self.currentvpvs)
+            vpvs_birth = vpvs[ind] + self.rstate.normal(0, self.propdist[4])
+            self.tempvpvs = np.concatenate((vpvs, [vpvs_birth]))
+            valid_list.append(self._validvpvs(self.tempvpvs))
+
+            if all(valid_list):
+                return None
     
     def _ani_vpvs_layerdeath(self, ind_death):
         if self.ani_flag:
