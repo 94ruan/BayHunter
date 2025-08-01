@@ -214,6 +214,21 @@ class SingleTarget(object):
             self.traceflag = kwarg.get('traceflag', np.ones(73))
             self.traceflag_arg = np.where(self.traceflag!=0)[0]
             self.traceweight = kwarg.get('traceweight', np.ones(73))
+            # weight_arg = np.argmax(self.traceweight)
+            # self.traceflag_temp = np.zeros_like(self.traceflag)
+            # self.traceflag_temp[weight_arg] = 1
+            # self.traceflag_temp_arg = np.where(self.traceflag_temp!=0)[0]
+            num_ones = len(self.traceflag_arg)
+            if num_ones <= 16:
+                self.traceflag_temp = self.traceflag.copy()  # 如果 1 的数量 ≤ 16，直接保留原数组
+                self.traceflag_temp_arg = np.where(self.traceflag_temp!=0)[0]
+            else:
+                selected_indices = np.linspace(0, num_ones - 1, 16, dtype=int)  # 均匀选取 16 个索引
+                selected_positions = self.traceflag_arg[selected_indices]  # 映射回原数组的位置
+                self.traceflag_temp = np.zeros_like(self.traceflag)
+                self.traceflag_temp[selected_positions] = 1
+                self.traceflag_temp_arg = np.where(self.traceflag_temp!=0)[0]
+                print(self.traceflag_temp)
         logger.info("Initiated target: %s (ref: %s)"
                     % (self.__class__.__name__, self.ref))
 
@@ -239,7 +254,7 @@ class SingleTarget(object):
 
         if self.ref=='iterrf':
             self.valuation.misfit = self.valuation.get_rms(
-                self.obsdata.y[self.traceflag_arg], self.moddata.y[self.traceflag_arg])
+                self.obsdata.y[self.traceflag_temp_arg], self.moddata.y[self.traceflag_temp_arg])
         else:
             self.valuation.misfit = self.valuation.get_rms(
                 self.obsdata.y, self.moddata.y)
@@ -250,24 +265,41 @@ class SingleTarget(object):
             return
 
         self.valuation.likelihood = self.valuation.get_likelihood(
-            self.obsdata.y, self.moddata.y, c_inv, logc_det, self.ref, self.traceflag)
+            self.obsdata.y, self.moddata.y, c_inv, logc_det, self.ref, self.traceflag_temp)
 
-    def plot(self, ax=None, mod=True):
+    def plot(self, ax=None, mod=True, profile=False):
         if ax is None:
             fig, ax = plt.subplots()
 
         # ax.plot(self.obsdata.x, self.obsdata.y, label='obs',
         #         marker='x', ms=1, color='blue', lw=0.8, zorder=1000)
-        yobs = np.average(self.obsdata.y[self.traceflag_arg], axis=0)[:len(self.obsdata.x)] if self.obsdata.y.ndim != 1 else self.obsdata.y
-        ax.errorbar(self.obsdata.x, yobs, yerr=self.obsdata.yerr,
-                    label='obs', marker='x', ms=1, color='blue', lw=0.8,
-                    elinewidth=0.7, zorder=1000)
+        if not profile:
+            yobs = np.average(self.obsdata.y[self.traceflag_temp_arg], axis=0)[:len(self.obsdata.x)] if self.obsdata.y.ndim != 1 else self.obsdata.y
+            ax.errorbar(self.obsdata.x, yobs, yerr=self.obsdata.yerr,
+                        label='obs', marker='x', ms=1, color='blue', lw=0.8,
+                        elinewidth=0.7, zorder=1000)
+            ax.set_ylabel(self.ref)
+        else:
+            xobs = self.obsdata.x
+            xobs_doubled = np.concatenate([xobs, xobs + (xobs[-1] - xobs[0])])
+            for i, iyrf in enumerate(self.obsdata.y):
+                baz = i * 5
+                data_set_1 = iyrf * 10 + baz
+                if abs(np.max(iyrf)) >= 1:
+                    continue
+                # print(abs(np.max(data_set_1 - baz)))
+                ax.plot(xobs_doubled, data_set_1, color='k', alpha=0.1, lw=0.2)
+                ax.fill_between(xobs_doubled, data_set_1,
+                                baz, where=(data_set_1>baz), facecolor='k', alpha=0.4)
+                ax.fill_between(xobs_doubled, data_set_1,
+                                baz, where=(data_set_1<baz), facecolor='k', alpha=0.4)
+            ax.set_ylabel('Back-Azimuth in °')
+
         if mod:
-            ymod = np.average(self.moddata.y[self.traceflag_arg], axis=0)[:len(self.obsdata.x)] if self.moddata.y.ndim != 1 else self.moddata.y
+            ymod = np.average(self.moddata.y[self.traceflag_temp_arg], axis=0)[:len(self.obsdata.x)] if self.moddata.y.ndim != 1 else self.moddata.y
             ax.plot(self.moddata.x, ymod, label='mod',
                     marker='o',  ms=1, color='red', lw=0.7, alpha=0.5)
 
-        ax.set_ylabel(self.ref)
         ax.set_xlabel(self.moddata.xlabel)
 
         return ax
@@ -355,7 +387,11 @@ class JointTarget(object):
         logL = 0
         for n, target in enumerate(self.targets):
             if target.ref == 'iterrf':
-                kwargs['traceflag_arg'] = target.traceflag_arg
+                stage = kwargs.get('stage', 0)
+                if stage:
+                    target.traceflag_temp = target.traceflag
+                    target.traceflag_temp_arg = target.traceflag_arg
+                kwargs['traceflag_arg'] = target.traceflag_temp_arg
             target.moddata.calc_synth(h=h, vp=vp, vs=vs, rho=rho, **kwargs)
             if not target._moddata_valid():
                 self.proposallikelihood = -1e15
@@ -367,7 +403,7 @@ class JointTarget(object):
 
             ydiff = target.moddata.y - target.obsdata.y
             if target.ref == 'iterrf':
-                ydiff = ydiff[target.traceflag_arg]
+                ydiff = ydiff[target.traceflag_temp_arg]
                 halfsize = int(size / 2)
                 corr, sigma = noise[2*n:2*n+2]
                 c_inv, logc_det = target.get_covariance(
@@ -378,13 +414,13 @@ class JointTarget(object):
                 # logL_part = -0.5 * (halfsize * np.log(2*np.pi) + logc_det)
 
                 # 计算加权残差
-                weighted_ydiff_r = ydiff[:, :halfsize] * np.sqrt(target.traceweight[target.traceflag_arg, None])  # 加权前半部分
-                weighted_ydiff_t = ydiff[:, -halfsize:] * np.sqrt(target.traceweight[target.traceflag_arg, None])  # 加权后半部分
+                weighted_ydiff_r = ydiff[:, :halfsize] #* np.sqrt(target.traceweight[target.traceflag_temp_arg, None])  # 加权前半部分
+                weighted_ydiff_t = ydiff[:, -halfsize:] #* np.sqrt(target.traceweight[target.traceflag_temp_arg, None])  # 加权后半部分
                 # 计算加权后的马氏距离
-                r_madist = (weighted_ydiff_r.dot(c_inv).dot(weighted_ydiff_r.T)).trace()
+                r_madist = (weighted_ydiff_r.dot(c_inv).dot(weighted_ydiff_r.T)).trace() #/2.0
                 t_madist = (weighted_ydiff_t.dot(c_inv).dot(weighted_ydiff_t.T)).trace()
                 # 归一化（按总权重调整）
-                madist = (r_madist + t_madist) / np.sum(target.traceweight[target.traceflag_arg])  # 仅计算有效 trace 的总权重
+                madist = (r_madist + t_madist) / np.sum(target.traceflag_temp) #np.sum(target.traceweight[target.traceflag_temp_arg])  # 仅计算有效 trace 的总权重
             else:
                 corr, sigma = noise[2*n:2*n+2]
                 c_inv, logc_det = target.get_covariance(
@@ -400,7 +436,7 @@ class JointTarget(object):
         self.proposalmisfits = self.get_misfits()
         # print(f'madist: [{madist}]; misfit: [{self.proposalmisfits}]; like: [{self.proposallikelihood}]')
 
-    def plot_obsdata(self, ax=None, mod=False):
+    def plot_obsdata(self, ax=None, mod=False, profile=False):
         """Return subplot of all targets."""
         if len(self.targets) == 1:
             if ax is None:
@@ -414,12 +450,12 @@ class JointTarget(object):
         else:
             if ax is None:
                 fig, ax = plt.subplots(self.ntargets,
-                                       figsize=(6, 3.2*self.ntargets))
+                                       figsize=(6, 6*self.ntargets))
             else:
                 fig = ax[0].figure
 
             for i, target in enumerate(self.targets):
-                ax[i] = target.plot(ax=ax[i], mod=mod)
+                ax[i] = target.plot(ax=ax[i], mod=mod, profile=profile)
 
             han, lab = ax[0].get_legend_handles_labels()
             ax[0].legend(han, lab)

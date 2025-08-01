@@ -518,10 +518,17 @@ class PlotFromStorage(object):
         data2d, xedges, yedges = np.histogram2d(vss_flatten, deps_int.flatten(),
                                 				bins=(vsbins, depbins))
 
-        axes[0].imshow(data2d.T, extent=(xedges[0], xedges[-1],
+        im = axes[0].imshow(data2d.T, extent=(xedges[0], xedges[-1],
         							     yedges[0], yedges[-1]),
         			   origin='lower',
         			   vmax=len(models), aspect='auto')
+        
+        cbar = fig.colorbar(im, ax=axes[0], pad=0.02, label='Counts')
+        cbar.set_label('Probability', rotation=270, labelpad=1)
+        # 获取当前colorbar的范围
+        vmin, vmax = im.get_clim()
+        cbar.set_ticks([vmin, vmax])  # 设置为最小值和最大值位置
+        cbar.set_ticklabels(['0', '1'])  # 设置对应的标签
 
         # plot mean / modes
         # colors = ['green', 'white']
@@ -645,7 +652,7 @@ class PlotFromStorage(object):
 
     @staticmethod
     def _plot_bestanis(bestmodels, dep_int=None, ani=None):
-        fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(4.4, 21))
+        fig, axs = plt.subplots(nrows=1, ncols=3, figsize=(15, 7))
 
         models = ['mean', 'median', 'stdminmax']
         colors = ['green', 'blue', 'black']
@@ -670,6 +677,100 @@ class PlotFromStorage(object):
             axs[row].legend(han[:-1], lab[:-1], loc=3)
         return fig, axs
     
+    @staticmethod
+    def _plot_bestanis_hist(models, ani, dep_int=None):
+        """
+        2D histogram with 30 vs cells and 50 depth cells.
+        As plot depth is limited to 100 km, each depth cell is a 2 km.
+
+        pinterf is the number of interfaces to be plot (derived from gradient)
+        """
+        if dep_int is None:
+            dep_int = np.linspace(0, 100, 201)  # interppolate depth to 0.5 km.
+            # bins for 2d histogram
+            depbins = np.linspace(0, 100, 101)  # 1 km bins
+        else:
+            maxdepth = int(np.ceil(dep_int.max()))
+            interp = dep_int[1] - dep_int[0]
+            dep_int = np.arange(dep_int[0], dep_int[-1] + interp / 2., interp / 2.)
+            depbins = np.arange(0, maxdepth + 2*interp, interp)  # interp km bins
+            # nbin = np.arange(0, maxdepth + interp, interp)  # interp km bins
+        anipara = ['ani_strength', 'trend', 'plunge']
+        aniunit = ['%', '°', '°']
+
+        # get interfaces, #first
+        models2 = ModelMatrix._replace_zvnoi_h(models)
+        # models2 = np.array([model[~np.isnan(model)] for model in models2])
+        # yinterf = np.array([np.cumsum(model[int(model.size/2):-1])
+        #                     for model in models2])
+        models2 = [model[~np.isnan(model)] for model in models2]
+        yinterf = [np.cumsum(model[int(model.size/2):-1])
+                            for model in models2]
+        yinterf = np.concatenate(yinterf)
+
+        # initiate plot
+        fig, axes = plt.subplots(3, 2, gridspec_kw={'width_ratios': [4, 1]},
+                                 sharey=True, figsize=(4.4, 21))
+        fig.subplots_adjust(wspace=0.05)
+
+        for row in range(3):
+            ani_part = ani[:, row, :]
+            vss_int, deps_int = ModelMatrix.get_interpmodels(models, dep_int, opt=ani_part)
+            singlemodels = ModelMatrix.get_singlemodels(models, dep_int=depbins, opt=ani_part)
+
+            vss_flatten = vss_int.flatten()
+            vsinterval = 0.025  # km/s, 0.025 is assumption for vs_round
+            # vsbins = int((vss_flatten.max() - vss_flatten.min()) / vsinterval)
+            vs_histmin = vs_round(vss_flatten.min())-2*vsinterval
+            vs_histmax = vs_round(vss_flatten.max())+3*vsinterval
+            vsbins = np.arange(vs_histmin, vs_histmax, vsinterval) # some buffer
+            
+            data2d, xedges, yedges = np.histogram2d(vss_flatten, deps_int.flatten(),
+                                    				bins=(vsbins, depbins))
+
+            im = axes[row][0].imshow(data2d.T, extent=(xedges[0], xedges[-1],
+            							     yedges[0], yedges[-1]),
+            			   origin='lower',
+            			   vmax=len(models), aspect='auto')
+
+            cbar = fig.colorbar(im, ax=axes[row][0], pad=0.02, label='Counts')
+            cbar.set_label('Probability', rotation=270, labelpad=1)
+            # 获取当前colorbar的范围
+            vmin, vmax = im.get_clim()
+            cbar.set_ticks([vmin, vmax])  # 设置为最小值和最大值位置
+            cbar.set_ticklabels(['0', '1'])  # 设置对应的标签
+
+            # plot mean / modes
+            # colors = ['green', 'white']
+            # for c, choice in enumerate(['mean', 'mode']):
+            colors = ['white']
+            for c, choice in enumerate(['mode']):
+                vs, dep = singlemodels[choice]
+                color = colors[c]
+                axes[row][0].plot(vs, dep, color=color, lw=1, alpha=0.9, label=choice)
+
+            vs_mode, dep_mode = singlemodels['mode']
+            axes[row][0].legend(loc=3)
+
+            # histogram for interfaces
+            # data = axes[1].hist(yinterf, bins=depbins, orientation='horizontal',
+            #                     color='lightgray', alpha=0.7,
+            #                     edgecolor='k')
+            # bins, lay_bin, _ = np.array(data).T
+            bins, lay_bin, _  = axes[row][1].hist(yinterf, bins=depbins, orientation='horizontal',
+                                color='lightgray', alpha=0.7,
+                                edgecolor='k')
+            center_lay = (lay_bin[:-1] + lay_bin[1:]) / 2.
+
+            axes[row][0].set_ylabel('Depth in km')
+            axes[row][0].set_xlabel(f'{anipara[row]} in {aniunit[row]}')
+
+            axes[row][0].invert_yaxis()
+
+            # axes[row][0].set_title('%d models' % len(models))
+            axes[row][1].set_xticks([])
+        return fig, axes
+
     # @tryexcept
     def plot_posterior_ani(self, final=True, chainidx=0, depint=1):
         ani, = self._get_posterior_data(['ani'], final, chainidx)
@@ -685,9 +786,31 @@ class PlotFromStorage(object):
         for ax in axs:
             ax.set_ylim(self.priors['z'][::-1])
             ax.grid(color='gray', alpha=0.6, ls=':', lw=0.5)
-            ax.set_title('%d ani from %d chains' % (len(ani), nchains))
+            # ax.set_title('%d ani' % (len(ani)))
+        axs[0].set_title('%d models from %d chains' % (len(models), nchains))
         return fig
 
+    #@tryexcept
+    def plot_posterior_ani2d(self, final=True, chainidx=0, depint=1):
+        ani, = self._get_posterior_data(['ani'], final, chainidx)
+        if final:
+            nchains = self.initparams['nchains'] - self.outliers.size
+        else:
+            nchains = 1
+
+        models, = self._get_posterior_data(['models'], final, chainidx)
+
+        dep_int = np.arange(self.priors['z'][0],
+                            self.priors['z'][1] + depint, depint)
+
+        fig, axes = self._plot_bestanis_hist(models, ani, dep_int=dep_int)
+        for ax in axes:
+            ax[0].set_ylim(self.priors['z'][::-1])
+            ax[0].grid(color='gray', alpha=0.6, ls=':', lw=0.5)
+        # axes[0][0].set_title('%d ani' % (len(ani)))
+        axes[0][0].set_title('%d models from %d chains' % (len(models), nchains))
+        return fig
+    
     @tryexcept
     def plot_posterior_vpvs(self, final=True, chainidx=0, depint=1):
         vpvs, = self._get_posterior_data(['vpvs'], final, chainidx)
@@ -704,7 +827,7 @@ class PlotFromStorage(object):
             fig, ax = self._plot_bestmodels(models, dep_int, opt=vpvs) #Need Modify
             ax.set_ylim(self.priors['z'][::-1])
             ax.grid(color='gray', alpha=0.6, ls=':', lw=0.5)
-            ax.set_title('%d vpvs from %d chains' % (len(vpvs), nchains))
+            ax.set_title('%d vpvs' % (len(vpvs)))
             return fig
         bins = 20
         formatter = '%.2f'
@@ -744,7 +867,7 @@ class PlotFromStorage(object):
                 ax = self._plot_posterior_distribution(data, bins, formatter, ax=ax)
             ax.set_xlabel(label[i])
         return fig
-
+    
     @tryexcept
     def plot_posterior_others(self, final=True, chainidx=0):
         likes, = self._get_posterior_data(['likes'], final, chainidx)
@@ -1039,7 +1162,7 @@ class PlotFromStorage(object):
             currentvpvs = vpvs[-1]
             currentmodel = models[-1]
             vp, vs, h = Model.get_vp_vs_h(currentmodel, currentvpvs, self.mantle)
-            rho = vp * 0.32 + 0.77
+            rho = 1.6612*vp - 0.4721*vp**2 + 0.0671*vp**3 - 0.0043*vp**4 + 0.000103*vp**5
             jmisfit = 0
             for n, target in enumerate(targets.targets):
                 xmod, ymod = target.moddata.plugin.run_model(
@@ -1060,6 +1183,98 @@ class PlotFromStorage(object):
                     label = 'c%d / %.3f' % (chainidx, jmisfit)
                     ax.plot(xmod, ymod, color=color, alpha=0.5, lw=0.7,
                             label=label)
+
+        if len(targets.targets) > 1:
+            ax[0].set_title('Current data fits')
+            idx = len(targets.targets) - 1
+            han, lab = ax[idx].get_legend_handles_labels()
+            handles, labels = self._unique_legend(han, lab)
+            ax[0].legend().set_visible(False)
+        else:
+            ax.set_title('Current data fits')
+            han, lab = ax.get_legend_handles_labels()
+            handles, labels = self._unique_legend(han, lab)
+            ax.legend().set_visible(False)
+
+        fig.legend(handles, labels, loc='center left',
+                   bbox_to_anchor=(0.92, 0.5))
+        return fig
+
+    @tryexcept
+    def plot_toplikedatafits(self, nchains):
+        """Plot the first nchains chains, no matter of outlier status.
+        """
+        base = cm.get_cmap(name='rainbow')
+        color_list = base(np.linspace(0, 1, nchains))
+        targets = Targets.JointTarget(targets=self.targets)
+        
+        fig, ax = targets.plot_obsdata(mod=False, profile=True)
+        
+        likeli = [np.load(modfile.replace('models', 'likes'))[-1] for i, modfile in enumerate(self.modfiles[1][:nchains])]
+        maxlike = np.argmax(likeli)
+        modfile = self.modfiles[1][maxlike]
+        color = color_list[maxlike]
+        chainidx, _, _ = self._return_c_p_t(modfile)
+        models = np.load(modfile)
+        # vpvs = np.load(modfile.replace('models', 'vpvs')).T
+        vpvs = np.load(modfile.replace('models', 'vpvs'))
+        currentvpvs = vpvs[-1]
+        currentmodel = models[-1]
+
+        vp, vs, h = Model.get_vp_vs_h(currentmodel, currentvpvs, self.mantle)
+        rho = 1.6612*vp - 0.4721*vp**2 + 0.0671*vp**3 - 0.0043*vp**4 + 0.000103*vp**5
+        jmisfit = 0
+        for n, target in enumerate(targets.targets):
+            currentani = np.load(modfile.replace('models', 'ani'))[-1] if target.obsdata.y.ndim != 1 else np.zeros((3, currentmodel.size))
+            currentani = currentani[~np.isnan(currentani)].reshape((3, -1))
+            xmod, ymod = target.moddata.plugin.run_model(
+                h=h, vp=vp, vs=vs, rho=rho, ani=currentani, flag=np.where(currentani[0]!=0.0, 0, 1)[0])
+            # if ymod.ndim != 1:
+            #     ymod = np.average(ymod, axis=0, weights=target.traceweight)[:len(target.obsdata.x)]
+            yobs = target.obsdata.y
+            misfit = target.valuation.get_rms(yobs, ymod)
+            jmisfit += misfit
+
+            label = ''
+            if len(targets.targets) > 1:
+                if ((len(targets.targets) - 1) - n) < 1e-2:
+                    label = 'c%d / %.3f' % (chainidx, jmisfit)
+                if ymod.ndim != 1:
+                    xmod_doubled = np.concatenate([xmod, xmod + (xmod[-1] - xmod[0])])
+                    for i, iyrf in enumerate(ymod):
+                        baz = i * 5
+                        data_set_1 = iyrf * 10 + baz
+                        if abs(np.max(iyrf)) >= 1:
+                            continue
+                        # print(abs(np.max(data_set_1 - baz)))
+                        ax[n].plot(xmod_doubled, data_set_1, color='k', alpha=0.1, lw=0.2)
+                        ax[n].fill_between(xmod_doubled, data_set_1,
+                                        baz, where=(data_set_1>baz), facecolor='b', alpha=0.5, lw=0.2)
+                        ax[n].fill_between(xmod_doubled, data_set_1,
+                                        baz, where=(data_set_1<baz), facecolor='r', alpha=0.5, lw=0.2)
+                    ax[n].axvline(x=xmod[-1], color='black' , linestyle='--', alpha=0.8, linewidth=2)
+                    xmin = xmod[0]
+                    xmax = xmod[-1] + (xmod[-1] - xmod[0])
+                    # Set ticks at integer intervals
+                    xticks = np.arange(np.floor(xmin), np.ceil(xmax) + 1, 1)
+                    ax[n].set_xticks(xticks)
+                    # Create labels that repeat after original xmod range
+                    xticklabels = []
+                    period = xmod[-1] - xmod[0]  
+                    for x in xticks:
+                        pos_in_period = (x - xmin) % period
+                        label_val = xmin + pos_in_period
+                        if np.isclose(pos_in_period, 0) and x > xmin:
+                            label_val = xmod[-1]
+                        xticklabels.append(f"{label_val:.0f}" if label_val.is_integer() else f"{label_val:.1f}")
+                    ax[n].set_xticklabels(xticklabels)
+                else:
+                    ax[n].plot(xmod, ymod, color=color, alpha=0.7, lw=0.8,
+                               label=label)
+            else:
+                label = 'c%d / %.3f' % (chainidx, jmisfit)
+                ax.plot(xmod, ymod, color=color, alpha=0.5, lw=0.7,
+                        label=label)
 
         if len(targets.targets) > 1:
             ax[0].set_title('Current data fits')
@@ -1162,7 +1377,7 @@ class PlotFromStorage(object):
                 thebestchain = chainidx
 
             vp, vs, h = Model.get_vp_vs_h(bestmodel, bestvpvs, self.mantle)
-            rho = vp * 0.32 + 0.77
+            rho = 1.6612*vp - 0.4721*vp**2 + 0.0671*vp**3 - 0.0043*vp**4 + 0.000103*vp**5
 
             for n, target in enumerate(targets.targets):
                 xmod, ymod = target.moddata.plugin.run_model(
@@ -1207,7 +1422,7 @@ class PlotFromStorage(object):
         target = self.targets[ind]
         x, y = target.obsdata.x, target.obsdata.y
         vp, vs, h = Model.get_vp_vs_h(model, vpvs, self.mantle)
-        rho = vp * 0.32 + 0.77
+        rho = 1.6612*vp - 0.4721*vp**2 + 0.0671*vp**3 - 0.0043*vp**4 + 0.000103*vp**5
 
         _, ymod = target.moddata.plugin.run_model(
             h=h, vp=vp, vs=vs, rho=rho)
@@ -1315,13 +1530,13 @@ class PlotFromStorage(object):
         fig1c = self.plot_iiternlayers(nchains=nchains)
         self.savefig(fig1c, 'c_iiter_nlayers.pdf')
 
-        fig1d = self.plot_iitervpvs(nchains=nchains)
-        self.savefig(fig1d, 'c_iiter_vpvs.pdf')
+        # fig1d = self.plot_iitervpvs(nchains=nchains)
+        # self.savefig(fig1d, 'c_iiter_vpvs.pdf')
 
         for i in range(self.ntargets):
             ind = i * 2 + 1
-            fig1d = self.plot_iiternoise(nchains=nchains, ind=ind)
-            self.savefig(fig1d, 'c_iiter_noisepar%d.pdf' % ind)
+            fig1e = self.plot_iiternoise(nchains=nchains, ind=ind)
+            self.savefig(fig1e, 'c_iiter_noisepar%d.pdf' % ind)
 
         # plot current models and datafit
         fig3a = self.plot_currentmodels(nchains=nchains)
@@ -1353,3 +1568,8 @@ class PlotFromStorage(object):
 
         fig2f = self.plot_posterior_ani()
         self.savefig(fig2f, 'c_posterior_anis.pdf')
+        fig2g = self.plot_posterior_ani2d()
+        self.savefig(fig2g, 'c_posterior_anis2d.pdf')
+
+        fig2h = self.plot_toplikedatafits(nchains=nchains)
+        self.savefig(fig2h, 'c_maxlikedatafits.pdf')

@@ -17,6 +17,8 @@ import random
 import os
 import obspy
 from obspy import Stream
+from scipy.fftpack import fft, ifft, fftfreq
+from scipy.signal import correlate, find_peaks
 
 rstate = np.random.RandomState(333)
 
@@ -398,12 +400,6 @@ def rrf_estimate(pars=dict()):
 
     return rrfs, a_est
 
-import numpy as np
-import random
-
-import numpy as np
-import random
-
 def calculate_layer_boundaries(z_disc, z_vnoi_pre=None, b=None):
     """
     Convert disc elevations (z_disc) to layer boundaries (z_vnoi) with:
@@ -590,3 +586,144 @@ def read_paired_q_t_streams_raw(sac_dir, target_delta):
     x_axis_full = b + np.arange(npts) * target_delta
     
     return q_stream, t_stream, x_axis_full
+
+def remove_reverberations(RF, dt, water_level=0.05, return_params=False):
+    """
+    去除接收函数中的沉积层多次反射（共振移除滤波）
+    
+    参数:
+    ----------
+    RF : array_like
+        原始接收函数时间序列（含多次反射）
+    dt : float
+        时间采样间隔（秒）
+    water_level : float, optional
+        水位反卷积的水位值（默认 0.05）
+    return_params : bool, optional
+        是否返回滤波器参数 r0 和 Delta_t（默认 False）
+    
+    返回:
+    ----------
+    RF_remove : ndarray
+        去除多次反射后的接收函数
+    (r0, Delta_t) : tuple (可选)
+        仅当 return_params=True 时返回，多次反射参数
+    """
+    # --- 1. 计算自相关函数，提取 r0 和 Delta_t ---
+    autocorr = correlate(RF, RF, mode='full')
+    autocorr = autocorr[len(RF)-1:]  # 取非负延迟部分
+    autocorr = autocorr / autocorr[0]  # 归一化
+    
+    # 寻找第一个波谷（多次反射周期）
+    troughs, _ = find_peaks(-autocorr, height=-0.1)  # 忽略极小波谷
+    if len(troughs) == 0:
+        print("Warning: 未检测到明显多次反射，返回原始接收函数")
+        return RF if not return_params else (RF, (0, 0))
+    
+    Delta_t = troughs[0] * dt  # 多次反射周期
+    r0 = -autocorr[troughs[0]]  # 反射系数（取正值）
+    
+    # --- 2. 构建频率域滤波器 (1 + r0 * exp(-iωΔt)) ---
+    n = len(RF)
+    freqs = fftfreq(n, dt)
+    omega = 2 * np.pi * freqs
+    filter_fft = 1 + r0 * np.exp(-1j * omega * Delta_t)
+    
+    # --- 3. 应用滤波器 ---
+    RF_fft = fft(RF)
+    RF_remove_fft = RF_fft * filter_fft
+    RF_remove = np.real(ifft(RF_remove_fft))
+    
+    # --- 4. 可选：应用水位限制（防止高频噪声放大）---
+#     if water_level is not None:
+#         RF_remove = np.where(np.abs(RF_remove) < water_level, 
+#                             np.sign(RF_remove) * water_level, 
+#                             RF_remove)
+    
+    return (RF_remove, (r0, Delta_t)) if return_params else RF_remove
+
+def plot_comparison(xrf, yrf, scale=10,
+                    leftlabel=True, order=None, title=None):
+    """
+    Plot sorted traces on two panels, 'Radial and Transverse' or
+    'Fast and Slow'. Emphasizing for a specific time window also
+    avilible.
+    ----------
+    profile_type: str
+        'original': input Radial- and Transverse-component Stream
+        'corrected': corrected Radial- and Transverse-component Stream
+        'fastslow': corrected Fast- and Slow-component Stream
+        'beforeshift': Fast- and Slow-component Stream before time delay shift
+    scale: float
+    timemin: float
+        start time of time-window
+    timemax: float
+        end time of time-window
+    emphasize: bool
+        To high-light signal within a specific time-window
+        defined by 'emphamin' and 'emphamax'
+    """
+    fig, ax = plt.subplots(figsize=(16.0,16.0),dpi=330)
+    ax1 = fig.add_subplot(121)
+    ax2 = fig.add_subplot(122)
+    if order!=None:
+        plt.figtext(order[0], order[1], order[2],
+                    horizontalalignment="center", 
+                    verticalalignment="center",
+                    wrap=True, fontsize=36)
+    
+    ax1.set_xticks(np.arange(0, 20, 1))
+    ax1.set_xlim(xmin=-1)
+    ax1.set_xlabel('Time [s]', fontsize=46)
+    ax1.set_ylim(ymin=-10, ymax=370)
+    if leftlabel:
+        ax1.set_yticks(np.linspace(0,360,13))
+        ax1.set_ylabel('Back Azimuth [°]', fontsize=46)
+    else:
+        ax1.set_yticks([])
+    ax1.tick_params(size=7, width=2, labelsize=36)
+    
+    ax2.set_xticks(np.arange(0, 20, 1))
+    ax2.set_xlim(xmin=-1)
+    ax2.set_ylim(ymin=-10, ymax=370)
+    ax2.set_yticks([])
+    ax2.set_xlabel('Time [s]', fontsize=46)
+    ax2.tick_params(size=7, width=2, labelsize=36)
+    
+    # Set boundary
+    for key in ['top', 'bottom', 'left', 'right']:
+        ax1.spines[key].set_linewidth(3.5)
+        ax2.spines[key].set_linewidth(3.5)
+    
+    ax1.axvline(x=0 , color='black' , linestyle='--', alpha=0.4, linewidth=2)
+    ax1.axvline(x=2 , color='black' , linestyle='--', alpha=0.4, linewidth=2)
+    ax1.axvline(x=4 , color='black' , linestyle='--', alpha=0.4, linewidth=2)
+    ax1.axvline(x=6 , color='black' , linestyle='--', alpha=0.4, linewidth=2)
+    ax2.axvline(x=0 , color='black' , linestyle='--', alpha=0.4, linewidth=2)
+    ax2.axvline(x=2 , color='black' , linestyle='--', alpha=0.4, linewidth=2)
+    ax2.axvline(x=4 , color='black' , linestyle='--', alpha=0.4, linewidth=2)
+    ax2.axvline(x=6 , color='black' , linestyle='--', alpha=0.4, linewidth=2)
+    
+    alpha_em = 1
+
+    for i, iyrf in enumerate(yrf[:, :len(xrf)]):
+        baz = i * 5
+        data_set_1 = iyrf[:len(xrf)] * scale + baz
+        data_set_2 = iyrf[len(xrf):] * scale + baz
+        
+        ax1.plot(xrf, data_set_1, color='k', alpha=0.1)
+        ax1.fill_between(xrf, data_set_1,
+                         baz, where=(data_set_1>baz), facecolor='b', alpha=alpha_em)
+        ax1.fill_between(xrf, data_set_1,
+                         baz, where=(data_set_1<baz), facecolor='r', alpha=alpha_em)
+        
+        ax2.plot(xrf, data_set_2,color='k', alpha=0.1)
+        ax2.fill_between(xrf, data_set_2,
+                         baz, where=(data_set_2>baz), facecolor='b', alpha=alpha_em)
+        ax2.fill_between(xrf, data_set_2,
+                         baz, where=(data_set_2<baz), facecolor='r', alpha=alpha_em)
+    plt.tight_layout()
+    plt.show()
+    
+    
+    return fig, 

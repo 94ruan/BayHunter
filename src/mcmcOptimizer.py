@@ -11,6 +11,7 @@ import time
 import os.path as op
 import numpy as np
 import copy
+from copy import deepcopy
 
 import matplotlib.pyplot as plt
 import multiprocessing as mp

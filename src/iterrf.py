@@ -9,17 +9,14 @@
 import numpy as np
 import time
 import os
-import gc
-import psutil
-import threading
 from fraysum import run_bare_mcmc
 from BayHunter.IterDecon_bare import gauss_filter#, iterdecon
 from iterdecon_cython import iterdecon
-from iterdecon_cython import ThreadLocalStorage
 from pyraysum import Model, Geometry, Control
 from .tls_helper import get_tls
-from ctypes import POINTER, c_float, c_int, c_bool
 from scipy.fft import fft, ifft
+import logging
+logger = logging.getLogger()
 
 class IterRF(object):
     """
@@ -45,7 +42,8 @@ class IterRF(object):
         
         # 线程本地存储
         # self._tls = get_tls(self.nsamp)
-        
+        # self.tls_pool = [ThreadLocalStorage(self.nsamp) for _ in range(72)]
+
         # 预计算不变参数
         self._precompute_constants()
         
@@ -64,20 +62,20 @@ class IterRF(object):
             fft(ifft(self.gaussF).real / np.max(np.abs(ifft(self.gaussF).real)) * 1),
             dtype=np.complex128, order='C'
         )
-        self.realdata = self.modelparams.get('realdata', False)
+        self.realdata = self.modelparams.get('realdata', True)
         
     def _setup_optimized_buffers(self):
         """设置优化的内存缓冲区"""
         # 模型参数缓冲区
         self._model_buf = {
-            'thick': np.zeros(10, dtype=np.float32, order='F'),
-            'rho': np.zeros(10, dtype=np.float32, order='F'),
-            'vp': np.zeros(10, dtype=np.float32, order='F'),
-            'vs': np.zeros(10, dtype=np.float32, order='F'),
-            'strike': np.zeros(10, dtype=np.float32, order='F'),
-            'dip': np.zeros(10, dtype=np.float32, order='F'),
-            'flag': np.zeros(10, dtype=np.int32, order='F'),
-            'ani': np.zeros((3, 10), dtype=np.float32, order='F')
+            'thick': np.zeros(15, dtype=np.float32, order='F'),
+            'rho': np.zeros(15, dtype=np.float32, order='F'),
+            'vp': np.zeros(15, dtype=np.float32, order='F'),
+            'vs': np.zeros(15, dtype=np.float32, order='F'),
+            'strike': np.zeros(15, dtype=np.float32, order='F'),
+            'dip': np.zeros(15, dtype=np.float32, order='F'),
+            'flag': np.zeros(15, dtype=np.int32, order='F'),
+            'ani': np.zeros((3, 15), dtype=np.float32, order='F')
         }
         
         # 输出缓冲区 (保持Fortran顺序)
@@ -89,23 +87,39 @@ class IterRF(object):
         self._forward_buf = np.zeros((73, 2, self.nsamp), dtype=np.float32, order='C')
 
     def _prepare_model(self, h, vp, vs, params):
+        '''初始化'''
+        self._model_buf['thick'].fill(0)
+        self._model_buf['vp'].fill(0)
+        self._model_buf['vs'].fill(0)
+        self._model_buf['rho'].fill(0)
+        self._model_buf['strike'].fill(0)
+        self._model_buf['dip'].fill(0)
+        self._model_buf['flag'].fill(1)  # 默认 flag=1
+        self._model_buf['ani'].fill(0)
+
         """修改为直接操作_model_buf"""
         nlay = len(h)
         self._model_buf['thick'][:nlay] = h * 1000
         self._model_buf['vp'][:nlay] = vp * 1000
         self._model_buf['vs'][:nlay] = vs * 1000
-        self._model_buf['rho'][:nlay] = params.get('rho', vp*0.32 + 0.77)
+        self._model_buf['rho'][:nlay] = (params.get('rho', 
+                                                   1.6612*vp - 0.4721*vp**2 + 0.0671*vp**3 - 0.0043*vp**4 + 0.000103*vp**5)) * 1000
         self._model_buf['strike'][:nlay] = params.get('strike', np.zeros(nlay))
         self._model_buf['dip'][:nlay] = params.get('dip', np.zeros(nlay))
+
         if self.realdata and (nlay>2):
-            self._model_buf['strike'][nlay-1] = 206
-            self._model_buf['strike'][nlay-2] = 206
-            self._model_buf['dip'][nlay-1] = 10
-            self._model_buf['dip'][nlay-2] = 10
-        self._model_buf['flag'][:nlay] = params.get('flag', np.ones(nlay, dtype=int))
-        
+            fixdip = self.modelparams.get('fixdip', 10)
+            fixstrike = self.modelparams.get('fixstrike', 206)
+            self._model_buf['strike'][nlay-1] = fixstrike
+            self._model_buf['strike'][nlay-2] = fixstrike
+            self._model_buf['dip'][nlay-1] = fixdip
+            self._model_buf['dip'][nlay-2] = fixdip
+
         ani = params.get('ani', np.zeros((3, nlay)))
         self._model_buf['ani'][:, :nlay] = ani
+
+        flag = params.get('flag', np.ones(nlay, dtype=int))
+        self._model_buf['flag'][:nlay] = np.where(ani[0, :] == 0, 1, flag)
 
         return Model(
             self._model_buf['thick'][:nlay],
@@ -155,7 +169,6 @@ class IterRF(object):
         # get nsamp
         ndata = self.obsx.size
         self.nsamp = int(2.**int(np.ceil(np.log2(ndata * 2))))
-        print(self.nsamp)
         
     def set_modelparams(self, **mparams):
         self.modelparams.update(mparams)
@@ -167,7 +180,6 @@ class IterRF(object):
         Parameters are:
         rho: Density 
         """
-        
         # 准备参数
         traceflag_arg = params.get('traceflag_arg', np.arange(73))
         baz = np.asarray(self._baz_template[traceflag_arg], dtype=np.float64, order='C')
@@ -178,12 +190,12 @@ class IterRF(object):
         geo = Geometry(baz, self.modelparams['p'], maxtr=73)
         rc = Control(
             dt=self.dt, npts=self.nsamp,
-            mults=params.get('mults', 2),
+            mults=self.modelparams.get('mults', 1),
             rot=self.modelparams['odina_flag'],
-            shift=self.tshft
+            shift=self.tshft,
         )
         # t1 = time.perf_counter()
-
+        
         # 执行计算 (直接操作内存)
         self._traces_buf32.fill(0)
         run_bare_mcmc(
@@ -193,7 +205,8 @@ class IterRF(object):
             vel_model.fdip, vel_model.nlay,
             *geo.parameters,
             *rc.parameters,
-            self._traces_buf32  # traces
+            self._traces_buf32,  # traces
+            maxt = self.modelparams.get('maxphasetime', 6.5) # maximum phase time
         )
         # t2 = time.perf_counter()
 
@@ -206,7 +219,7 @@ class IterRF(object):
         #     tshift=self.tshft, dt_bare=self.dt, 
         #     tls=get_tls(self.nsamp), nused=len(baz)
         # )
-
+        
         self._forward_buf.fill(0)
         self._traces_buf = self._traces_buf32.astype(np.float64, order='C')
         self._forward_buf[traceflag_arg, :, :] = iterdecon(
@@ -215,9 +228,13 @@ class IterRF(object):
             # self.gaussF_nor, 
             self.modelparams['odina_flag'],
             tshift=self.tshft, dt_bare=self.dt, 
-            tls=get_tls(self.nsamp), nused=len(baz)
+            # tls_pool=[ThreadLocalStorage(self.nsamp) for _ in range(72)], 
+            tls=get_tls(self.nsamp, len(baz)), 
+            nused=len(baz)
         )
-
+        # print('h, vp, vs', h, vp, vs)
+        # print('wave:', np.where(abs(self._traces_buf32)>1e-6))
+        # print('rf:', np.where(abs(self._forward_buf)>1e-6))
         # self._forward_buf.fill(0)
         # self._traces_buf = self._traces_buf32.astype(np.float64, order='C').transpose(2, 0, 1)
         # self._forward_buf[traceflag_arg, :, :] = iterdecon(
@@ -227,7 +244,7 @@ class IterRF(object):
         # )
         # t3 = time.perf_counter()
         # 性能日志
-        # print(f"[Timing] Params: {(t1-t0)*1000:.2f}ms | "
+        # logger.info(f"[Timing] Params: {(t1-t0)*1000:.2f}ms | "
         #       f"Waveform: {(t2-t1)*1000:.2f}ms | "
         #       f"Deconv: {(t3-t2)*1000:.2f}ms")
         
@@ -236,7 +253,6 @@ class IterRF(object):
         result = np.empty((73, 2*valid_len), dtype=np.float32)
         result[:, :valid_len] = self._forward_buf[:, 0, :valid_len]
         result[:, valid_len:] = self._forward_buf[:, 1, :valid_len]
-
         return self._time_axis[:valid_len], result
         
     # def validate(self, xmod, ymod):

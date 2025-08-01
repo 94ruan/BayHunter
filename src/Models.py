@@ -210,10 +210,11 @@ class ModelMatrix(object):
         stdminmax = np.array((stdminmodel, stdmaxmodel)).T
         # (5) mode from histogram
         vss_flatten = vss_int.flatten()
-        if opt is not None:
-            vsbins = 1
-        else:
-            vsbins = int((vss_flatten.max() - vss_flatten.min()) / 0.025)
+        # if opt is not None:
+        #     vsbins = 1
+        # else:
+        #     vsbins = int((vss_flatten.max() - vss_flatten.min()) / 0.025)
+        vsbins = int((vss_flatten.max() - vss_flatten.min()) / 0.025)
         # in PlotFromStorage posterior_models2d
         # data = np.histogram2d(vss_int.flatten(), deps_int.flatten(),
         #                       bins=(vsbins, dep_int))
