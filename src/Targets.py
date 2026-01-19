@@ -273,12 +273,27 @@ class SingleTarget(object):
 
         # ax.plot(self.obsdata.x, self.obsdata.y, label='obs',
         #         marker='x', ms=1, color='blue', lw=0.8, zorder=1000)
-        if not profile:
-            yobs = np.average(self.obsdata.y[self.traceflag_temp_arg], axis=0)[:len(self.obsdata.x)] if self.obsdata.y.ndim != 1 else self.obsdata.y
+        if self.ref not in ['iterrf']:
+            yobs = self.obsdata.y
+            # ax.plot(self.obsdata.x, yobs, label='obs',
+            #         marker='o',  ms=5, color='blue', lw=0.7, alpha=0.5)
             ax.errorbar(self.obsdata.x, yobs, yerr=self.obsdata.yerr,
-                        label='obs', marker='x', ms=1, color='blue', lw=0.8,
-                        elinewidth=0.7, zorder=1000)
-            ax.set_ylabel(self.ref)
+                        label='obs', fmt='o', color='blue', markersize=5, capsize=3, 
+                        #lw=0.8,elinewidth=0.7, 
+                        zorder=1000)
+            ax.grid(True, alpha=0.3)
+            if self.ref in ['rdispph', 'ldispph', 'rdispgr', 'ldispgr']:
+                ax.set_ylabel('Velocity in km/s')
+            else:
+                ax.set_ylabel(self.ref)
+        elif not profile:
+            yobs = np.average(self.obsdata.y[self.traceflag_temp_arg], axis=0)[:len(self.obsdata.x)] if self.obsdata.y.ndim != 1 else self.obsdata.y
+            ax.plot(self.obsdata.x, yobs, label='obs',
+                    marker='o',  ms=5, color='blue', lw=0.7, alpha=0.5)
+            ax.errorbar(self.obsdata.x, yobs, yerr=self.obsdata.yerr,
+                        label='obs', fmt='o', color='blue', markersize=5, capsize=3, 
+                        #lw=0.8,elinewidth=0.7, 
+                        zorder=1000)
         else:
             xobs = self.obsdata.x
             xobs_doubled = np.concatenate([xobs, xobs + (xobs[-1] - xobs[0])])

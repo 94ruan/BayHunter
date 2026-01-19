@@ -14,6 +14,7 @@ import os.path as op
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 from collections import OrderedDict
+import pandas as pd
 
 from BayHunter import utils
 from BayHunter import Targets
@@ -320,6 +321,11 @@ class PlotFromStorage(object):
             if mtype == 'vpvs':
                 dep, vpvs = self.refmodel['vpvs']
                 fig.axes[0].plot(vpvs, dep, **kwargs)
+            
+            if mtype == 'ani':
+                dep, ani = self.refmodel['ani']
+                for idx, ani_param in enumerate(ani): # intensity, trend, plunge
+                    fig.axes[idx].plot(ani_param, dep, **kwargs)
         return fig
 
 # Plot values per iteration.
@@ -472,7 +478,7 @@ class PlotFromStorage(object):
         return fig, ax
 
     @staticmethod
-    def _plot_bestmodels_hist(models, dep_int=None):
+    def _plot_bestmodels_hist(models, dep_int=None, station=None):
         """
         2D histogram with 30 vs cells and 50 depth cells.
         As plot depth is limited to 100 km, each depth cell is a 2 km.
@@ -552,6 +558,48 @@ class PlotFromStorage(object):
                             edgecolor='k')
         center_lay = (lay_bin[:-1] + lay_bin[1:]) / 2.
 
+        if station!=None:
+            # Vs=4.4 km/s add Moho proxy line
+            vs_target = 4.3  # km/s
+
+            # 找出包含vs_target的速度跃迁位置
+            initial_moho_depth = None
+    
+            for i in range(len(vs_mode) - 1):
+                vs_current = vs_mode[i]
+                vs_next = vs_mode[i + 1]
+                depth_current = dep_mode[i]
+                depth_next = dep_mode[i + 1]
+
+                # 检查是否包含速度跃迁且跨越了目标Vs值
+                if (vs_current < vs_target <= vs_next) or (vs_next < vs_target <= vs_current):
+                    # 计算跃迁幅度
+                    vs_jump = abs(vs_next - vs_current)
+
+                    # 如果跃迁幅度足够大（比如大于0.2 km/s），则认为是有意义的界面
+                    if vs_jump > 0.2:
+                        initial_moho_depth = depth_current  # 使用跃迁开始处的深度
+                        # print(f"Found Vs jump: {vs_current:.3f} -> {vs_next:.3f} km/s at depth {depth_current:.1f} -> {depth_next:.1f} km")
+                        # print(f"Vs jump magnitude: {vs_jump:.3f} km/s")
+                        break
+            if initial_moho_depth is None:
+                # find mode depth where Vs nearest to 4.4 km/s
+                vs_diff = np.abs(vs_mode - vs_target)
+                closest_idx = np.argmin(vs_diff)
+                initial_moho_depth = dep_mode[closest_idx]
+
+            # find proxy in hist
+            final_moho_depth = PlotFromStorage._find_moho_from_histogram(bins, center_lay, initial_moho_depth)
+            moho_depth = final_moho_depth
+
+            axes[0].axhline(y=moho_depth, color='red', linestyle='--', alpha=0.8, linewidth=1)
+            axes[0].text(x=4.0, y=moho_depth-3, s=f' Moho proxy \n   {moho_depth:.2f} km  ', 
+                         color='red', va='center', ha='left', fontsize=9,
+                         bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.9))
+            
+            # 保存station和moho_depth到CSV文件
+            PlotFromStorage._save_moho_to_csv(station, moho_depth)
+
         axes[0].set_ylabel('Depth in km')
         axes[0].set_xlabel('$V_S$ in km/s')
 
@@ -560,6 +608,81 @@ class PlotFromStorage(object):
         axes[0].set_title('%d models' % len(models))
         axes[1].set_xticks([])
         return fig, axes
+    
+    @staticmethod
+    def _find_moho_from_histogram(bins, depths, initial_depth, search_window=4.0):
+        """
+        在柱状图数据中搜索最大值来确定Moho深度
+
+        参数:
+            bins: 柱状图的计数值
+            depths: 柱状图对应的深度中心点
+            initial_depth: 初步估计的Moho深度
+            search_window: 搜索窗口大小 (km)
+
+        返回:
+            final_moho_depth: 最终确定的Moho深度
+        """
+        # 确定搜索范围
+        depth_min = initial_depth - search_window / 2
+        depth_max = initial_depth + search_window / 2
+
+        # 创建搜索掩码
+        search_mask = (depths >= depth_min) & (depths <= depth_max)
+
+        if not np.any(search_mask):
+            print(f"警告: 在深度 {initial_depth:.1f} ± {search_window/2:.1f} km 范围内未找到柱状图数据")
+            return initial_depth
+
+        # 在搜索范围内找到计数值最大的深度
+        search_bins = bins[search_mask]
+        search_depths = depths[search_mask]
+
+        max_bin_idx = np.argmax(search_bins)
+        final_depth = search_depths[max_bin_idx]
+
+        print(f"Moho深度调整: {initial_depth:.2f} km -> {final_depth:.2f} km "
+              f"(柱状图计数: {search_bins[max_bin_idx]})")
+
+        return final_depth
+
+    @staticmethod
+    def _save_moho_to_csv(station, moho_depth):
+        """
+        将台站和对应的Moho深度保存到CSV文件
+
+        参数:
+            station: 台站名称
+            moho_depth: Moho深度 (km)
+            csv_file: CSV文件名
+        """
+        csv_file = '/home/ruan/BayHunter/tutorial/Replot/Moho_depth.csv'
+        # 创建DataFrame
+        new_data = pd.DataFrame({
+            'station': [station],
+            'moho_depth_km': [moho_depth]
+        })
+
+        # 检查文件是否存在
+        if os.path.exists(csv_file):
+            # 如果文件存在，读取现有数据并追加新数据
+            existing_data = pd.read_csv(csv_file)
+            # 检查该台站是否已存在
+            if station in existing_data['station'].values:
+                # 更新已存在的台站数据
+                existing_data.loc[existing_data['station'] == station, 
+                                'moho_depth_km'] = moho_depth
+                updated_data = existing_data
+            else:
+                # 追加新台站数据
+                updated_data = pd.concat([existing_data, new_data], ignore_index=True)
+        else:
+            # 如果文件不存在，创建新文件
+            updated_data = new_data
+    
+        # 保存到CSV
+        updated_data.to_csv(csv_file, index=False)
+        # print(f"已保存台站 {station} 的Moho深度 {moho_depth:.2f} km 到 {csv_file}")
 
     def _get_posterior_data(self, data, final, chainidx=0):
         if final:
@@ -658,7 +781,7 @@ class PlotFromStorage(object):
         colors = ['green', 'blue', 'black']
         ls = ['-', '--', ':']
         lw = [1, 1, 1]
-        anipara = ['ani_strength', 'trend', 'plunge']
+        anipara = ['ani_intensity', 'trend', 'plunge']
         aniunit = ['%', '°', '°']
         for row in range(3):  # 改用不同的变量名
             ani_part = ani[:, row, :]
@@ -772,7 +895,7 @@ class PlotFromStorage(object):
         return fig, axes
 
     # @tryexcept
-    def plot_posterior_ani(self, final=True, chainidx=0, depint=1):
+    def plot_posterior_ani(self, final=True, chainidx=0, depint=1, station=None):
         ani, = self._get_posterior_data(['ani'], final, chainidx)
         models, = self._get_posterior_data(['models'], final, chainidx)
         if final:
@@ -788,6 +911,13 @@ class PlotFromStorage(object):
             ax.grid(color='gray', alpha=0.6, ls=':', lw=0.5)
             # ax.set_title('%d ani' % (len(ani)))
         axs[0].set_title('%d models from %d chains' % (len(models), nchains))
+
+        if station!=None:
+            fig.text(1.02, 0.9, station,
+                    fontsize=12, fontweight='bold',
+                    bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.5'),
+                    verticalalignment='top', horizontalalignment='right',
+                    transform=fig.transFigure)
         return fig
 
     #@tryexcept
@@ -925,14 +1055,14 @@ class PlotFromStorage(object):
         dep_int = np.arange(self.priors['z'][0],
                             self.priors['z'][1] + depint, depint)
         fig, ax = self._plot_bestmodels(models, dep_int)
-        # ax.set_xlim(self.priors['vs'])
+        ax.set_xlim(self.priors['vs'])
         ax.set_ylim(self.priors['z'][::-1])
         ax.grid(color='gray', alpha=0.6, ls=':', lw=0.5)
         ax.set_title('%d models from %d chains' % (len(models), nchains))
         return fig
 
     #@tryexcept
-    def plot_posterior_models2d(self, final=True, chainidx=0, depint=1):
+    def plot_posterior_models2d(self, final=True, chainidx=0, depint=1, station=None):
         if final:
             nchains = self.initparams['nchains'] - self.outliers.size
         else:
@@ -943,10 +1073,17 @@ class PlotFromStorage(object):
         dep_int = np.arange(self.priors['z'][0],
                             self.priors['z'][1] + depint, depint)
 
-        fig, axes = self._plot_bestmodels_hist(models, dep_int)
-        # axes[0].set_xlim(self.priors['vs'])
+        fig, axes = self._plot_bestmodels_hist(models, dep_int, station)
+        axes[0].set_xlim(self.priors['vs'])
+        print(self.priors['vs'])
         axes[0].set_ylim(self.priors['z'][::-1])
         axes[0].set_title('%d models from %d chains' % (len(models), nchains))
+        if station!=None:
+            fig.text(1.08, 0.9, station,
+                    fontsize=12, fontweight='bold',
+                    bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.5'),
+                    verticalalignment='top', horizontalalignment='right',
+                    transform=fig.transFigure)
         return fig
 
 
@@ -1201,7 +1338,7 @@ class PlotFromStorage(object):
         return fig
 
     @tryexcept
-    def plot_toplikedatafits(self, nchains):
+    def plot_toplikedatafits(self, nchains, station=None):
         """Plot the first nchains chains, no matter of outlier status.
         """
         base = cm.get_cmap(name='rainbow')
@@ -1244,6 +1381,103 @@ class PlotFromStorage(object):
                     for i, iyrf in enumerate(ymod):
                         baz = i * 5
                         data_set_1 = iyrf * 10 + baz
+                        # if abs(np.max(iyrf)) >= 1:
+                        #     continue
+                        # print(abs(np.max(data_set_1 - baz)))
+                        ax[n].plot(xmod_doubled, data_set_1, color='k', alpha=0.1, lw=0.2)
+                        ax[n].fill_between(xmod_doubled, data_set_1,
+                                        baz, where=(data_set_1>baz), facecolor='b', alpha=0.5, lw=0.2)
+                        ax[n].fill_between(xmod_doubled, data_set_1,
+                                        baz, where=(data_set_1<baz), facecolor='r', alpha=0.5, lw=0.2)
+                    ax[n].axvline(x=xmod[-1], color='black' , linestyle='--', alpha=0.8, linewidth=2)
+                    xmin = xmod[0]
+                    xmax = xmod[-1] + (xmod[-1] - xmod[0])
+                    # Set ticks at integer intervals
+                    xticks = np.arange(np.floor(xmin), np.ceil(xmax) + 1, 1)
+                    ax[n].set_xticks(xticks)
+                    # Create labels that repeat after original xmod range
+                    xticklabels = []
+                    period = xmod[-1] - xmod[0]  
+                    for x in xticks:
+                        pos_in_period = (x - xmin) % period
+                        label_val = xmin + pos_in_period
+                        if np.isclose(pos_in_period, 0) and x > xmin:
+                            label_val = xmod[-1]
+                        xticklabels.append(f"{label_val:.0f}" if label_val.is_integer() else f"{label_val:.1f}")
+                    ax[n].set_xticklabels(xticklabels)
+                else:
+                    ax[n].plot(xmod, ymod, color='red', alpha=0.7, lw=0.8,
+                               label=label)
+            else:
+                label = 'c%d / %.3f' % (chainidx, jmisfit)
+                ax.plot(xmod, ymod, color=color, alpha=0.5, lw=0.7,
+                        label=label)
+
+        if len(targets.targets) > 1:
+            ax[0].set_title('Maxlikelihood Receiver Function Data Fit')
+            ax[1].set_title('Maxlikelihood Dispersion Curve Data Fit')
+            idx = len(targets.targets) - 1
+            han, lab = ax[idx].get_legend_handles_labels()
+            handles, labels = self._unique_legend(han, lab)
+            ax[0].legend().set_visible(False)
+        else:
+            ax.set_title('Current data fits')
+            han, lab = ax.get_legend_handles_labels()
+            handles, labels = self._unique_legend(han, lab)
+            ax.legend().set_visible(False)
+
+        fig.legend(handles, labels, loc='center left',
+                   bbox_to_anchor=(0.92, 0.5))
+        if station!=None:
+            fig.text(1.05, 0.9, station,
+                    fontsize=12, fontweight='bold',
+                    bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.5'),
+                    verticalalignment='top', horizontalalignment='right',
+                    transform=fig.transFigure)
+        return fig
+
+    @tryexcept
+    def plot_initialdatafits(self, nchains, station=None):
+        """Plot the first nchains chains, no matter of outlier status.
+        """
+        base = cm.get_cmap(name='rainbow')
+        color_list = base(np.linspace(0, 1, nchains))
+        targets = Targets.JointTarget(targets=self.targets)
+        
+        fig, ax = targets.plot_obsdata(mod=False, profile=True)
+
+        likeli = [np.load(modfile.replace('models', 'likes'))[-1] for i, modfile in enumerate(self.modfiles[1][:nchains])]
+        maxlike = np.argmax(likeli)
+        modfile = self.modfiles[0][maxlike]
+        color = color_list[maxlike]
+        chainidx, _, _ = self._return_c_p_t(modfile)
+        models = np.load(modfile)
+        # vpvs = np.load(modfile.replace('models', 'vpvs')).T
+        vpvs = np.load(modfile.replace('models', 'vpvs'))
+        currentvpvs = vpvs[0]
+        currentmodel = models[0]
+
+        vp, vs, h = Model.get_vp_vs_h(currentmodel, currentvpvs, self.mantle)
+        rho = 1.6612*vp - 0.4721*vp**2 + 0.0671*vp**3 - 0.0043*vp**4 + 0.000103*vp**5
+        jmisfit = 0
+        for n, target in enumerate(targets.targets):
+            # currentani = np.load(modfile.replace('models', 'ani'))[-1] if target.obsdata.y.ndim != 1 else np.zeros((3, currentmodel.size))
+            # currentani = currentani[~np.isnan(currentani)].reshape((3, -1))
+            xmod, ymod = target.moddata.plugin.run_model(
+                h=h, vp=vp, vs=vs, rho=rho)
+            yobs = target.obsdata.y
+            misfit = target.valuation.get_rms(yobs, ymod)
+            jmisfit += misfit
+
+            label = ''
+            if len(targets.targets) > 1:
+                if ((len(targets.targets) - 1) - n) < 1e-2:
+                    label = 'c%d / %.3f' % (chainidx, jmisfit)
+                if ymod.ndim != 1:
+                    xmod_doubled = np.concatenate([xmod, xmod + (xmod[-1] - xmod[0])])
+                    for i, iyrf in enumerate(ymod):
+                        baz = i * 5
+                        data_set_1 = iyrf * 10 + baz
                         if abs(np.max(iyrf)) >= 1:
                             continue
                         # print(abs(np.max(data_set_1 - baz)))
@@ -1269,7 +1503,7 @@ class PlotFromStorage(object):
                         xticklabels.append(f"{label_val:.0f}" if label_val.is_integer() else f"{label_val:.1f}")
                     ax[n].set_xticklabels(xticklabels)
                 else:
-                    ax[n].plot(xmod, ymod, color=color, alpha=0.7, lw=0.8,
+                    ax[n].plot(xmod, ymod, color='red', alpha=0.7, lw=0.8,
                                label=label)
             else:
                 label = 'c%d / %.3f' % (chainidx, jmisfit)
@@ -1277,7 +1511,8 @@ class PlotFromStorage(object):
                         label=label)
 
         if len(targets.targets) > 1:
-            ax[0].set_title('Current data fits')
+            ax[0].set_title('Initial Receiver Function Data Fit')
+            ax[1].set_title('Initial Dispersion Curve Data Fit')
             idx = len(targets.targets) - 1
             han, lab = ax[idx].get_legend_handles_labels()
             handles, labels = self._unique_legend(han, lab)
@@ -1290,8 +1525,68 @@ class PlotFromStorage(object):
 
         fig.legend(handles, labels, loc='center left',
                    bbox_to_anchor=(0.92, 0.5))
+        if station!=None:
+            fig.text(1.05, 0.9, station,
+                    fontsize=12, fontweight='bold',
+                    bbox=dict(facecolor='white', alpha=0.8, boxstyle='round,pad=0.5'),
+                    verticalalignment='top', horizontalalignment='right',
+                    transform=fig.transFigure)
+        return fig
+    
+    @tryexcept
+    def plot_initialmodel(self, nchains):
+        """Plot the first nchains chains, no matter of outlier status.
+        """
+        fig, ax = plt.subplots(figsize=(4, 6.5))
+
+        base = cm.get_cmap(name='rainbow')
+        color_list = base(np.linspace(0, 1, nchains))
+
+        for i, modfile in enumerate(self.modfiles[0][:nchains]):
+            chainidx, _, _ = self._return_c_p_t(modfile)
+            models = np.load(modfile)
+            # vpvs = np.load(modfile.replace('models', 'vpvs')).T
+            vpvs = np.load(modfile.replace('models', 'vpvs'))
+            currentvpvs = vpvs[0]
+            currentmodel = models[0]
+
+            color = color_list[i]
+            vp, vs, h = Model.get_vp_vs_h(currentmodel, currentvpvs, self.mantle)
+            cvp, cvs, cdepth = Model.get_stepmodel_from_h(h=h, vs=vs, vp=vp)
+
+            label = 'c%d / %d' % (chainidx, vs.size-1)
+            ax.plot(cvs, cdepth, color=color, ls='-', lw=0.8,
+                    alpha=0.7, label=label)
+
+        ax.invert_yaxis()
+        ax.set_xlabel('$V_S$ in km/s')
+        ax.set_ylabel('Depth in km')
+        ax.set_xlim(self.priors['vs'])
+        ax.set_ylim(self.priors['z'][::-1])
+        ax.set_title('Initial models')
+        ax.grid(color='gray', alpha=0.6, ls=':', lw=0.5)
+        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
         return fig
 
+    @tryexcept
+    def plot_maxlikemodel(self, fig, nchains):
+        """Plot the model from maximum likelihood chain.
+        """
+       
+        likeli = [np.load(modfile.replace('models', 'likes'))[-1] for i, modfile in enumerate(self.modfiles[1][:nchains])]
+        maxlike = np.argmax(likeli)
+        modfile = self.modfiles[1][maxlike]
+
+        models = np.load(modfile)
+        vpvs = np.load(modfile.replace('models', 'vpvs'))
+        currentvpvs = vpvs[-1]
+        currentmodel = models[-1]
+
+        vp, vs, h = Model.get_vp_vs_h(currentmodel, currentvpvs, self.mantle)
+        cvp, cvs, cdepth = Model.get_stepmodel_from_h(h=h, vs=vs, vp=vp)
+
+        fig.axes[0].plot(cvs, cdepth, color='purple', ls='-', lw=1)
+    
     @tryexcept
     def plot_bestmodels(self):
         """Return fig.
@@ -1502,7 +1797,7 @@ class PlotFromStorage(object):
         self.plot_refmodel(fig5e, 'model', color='red', lw=0.5, alpha=0.7)
         self.savefig(fig5e, 'c%.3d_posterior_models2d.pdf' % cidx)
 
-    def save_plots(self, nchains=5, refmodel=dict(), depint=1):
+    def save_plots(self, nchains=5, refmodel=dict(), depint=1, station=None):
         """
         Refmodel is a dictionary and must contain plottable values:
         - 'vs' and 'dep' (np.arrays) for the vs-depth plots, will be plotted as given
@@ -1560,16 +1855,35 @@ class PlotFromStorage(object):
         self.savefig(fig2c, 'c_posterior_noise.pdf')
 
         fig2d = self.plot_posterior_models1d(depint=depint)
-        self.plot_refmodel(fig2d, 'model', color='k', lw=1)
+        self.plot_refmodel(fig2d, 'model', color='k', lw=1, label='true_model')
+        self.plot_maxlikemodel(fig2d, nchains=nchains)
         self.savefig(fig2d, 'c_posterior_models1d.pdf')
-        fig2e = self.plot_posterior_models2d(depint=depint)
+
+        fig2e = self.plot_posterior_models2d(depint=depint, station=station)
         self.plot_refmodel(fig2e, 'model', color='red', lw=0.5, alpha=0.7)
         self.savefig(fig2e, 'c_posterior_models2d.pdf')
 
-        fig2f = self.plot_posterior_ani()
+        fig2f = self.plot_posterior_ani(station=station)
+        self.plot_refmodel(fig2f, 'ani', color='k', lw=1, label='true_model')
         self.savefig(fig2f, 'c_posterior_anis.pdf')
         fig2g = self.plot_posterior_ani2d()
         self.savefig(fig2g, 'c_posterior_anis2d.pdf')
 
-        fig2h = self.plot_toplikedatafits(nchains=nchains)
+        fig2h = self.plot_toplikedatafits(nchains=nchains, station=station)
         self.savefig(fig2h, 'c_maxlikedatafits.pdf')
+
+        fig2i = self.plot_initialmodel(nchains=nchains)
+        self.savefig(fig2i, 'c_initialmodels.pdf')
+
+        fig2j = self.plot_initialdatafits(nchains=nchains, station=station)
+        self.savefig(fig2j, 'c_initialdatafits.pdf')
+
+    def save_2dmodel(self, nchains=5, refmodel=dict(), depint=1, station=None):
+        nchains = np.min([nchains, len(self.likefiles[1])])
+
+        fig2e = self.plot_posterior_models2d(depint=depint, station=station)
+        self.plot_refmodel(fig2e, 'model', color='red', lw=0.5, alpha=0.7)
+        self.savefig(fig2e, 'c_posterior_models2d.pdf')
+        # fig2f = self.plot_posterior_ani(station=station)
+        # self.plot_refmodel(fig2f, 'ani', color='k', lw=1, label='true_model')
+        # self.savefig(fig2f, 'c_posterior_anis.pdf')

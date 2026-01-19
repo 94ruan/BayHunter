@@ -215,6 +215,8 @@ class ModelMatrix(object):
         # else:
         #     vsbins = int((vss_flatten.max() - vss_flatten.min()) / 0.025)
         vsbins = int((vss_flatten.max() - vss_flatten.min()) / 0.025)
+        if vsbins==0:
+            vsbins = 1
         # in PlotFromStorage posterior_models2d
         # data = np.histogram2d(vss_int.flatten(), deps_int.flatten(),
         #                       bins=(vsbins, dep_int))
